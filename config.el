@@ -1,93 +1,30 @@
 ;;; $DOOMDIR/config.el -*- lexical-binding: t; -*-
 
+;; ——————————————————————————————————————————————————————————————————
+;; Basics
+;; ——————————————————————————————————————————————————————————————————
 
-;; Place your private configuration here! Remember, you do not need to run 'doom
-;; sync' after modifying this file!
-
-
-
-;; Some functionality uses this to identify you, e.g. GPG configuration, email
-;; clients, file templates and snippets. It is optional.
-;; (setq user-full-name "John Doe"
-;;       user-mail-address "john@doe.com")
-
-;; Doom exposes five (optional) variables for controlling fonts in Doom:
-;;
-;; - `doom-font' -- the primary font to use
-;; - `doom-variable-pitch-font' -- a non-monospace font (where applicable)
-;; - `doom-big-font' -- used for `doom-big-font-mode'; use this for
-;;   presentations or streaming.
-;; - `doom-symbol-font' -- for symbols
-;; - `doom-serif-font' -- for the `fixed-pitch-serif' face
-;;
-;; See 'C-h v doom-font' for documentation and more examples of what they
-;; accept. For example:
-;;
-;;(setq doom-font (font-spec :family "Fira Code" :size 12 :weight 'semi-light)
-;;      doom-variable-pitch-font (font-spec :family "Fira Sans" :size 13))
-;;
-;; If you or Emacs can't find your font, use 'M-x describe-font' to look them
-;; up, `M-x eval-region' to execute elisp code, and 'M-x doom/reload-font' to
-;; refresh your font settings. If Emacs still can't find your font, it likely
-;; wasn't installed correctly. Font issues are rarely Doom issues!
-
-;; If you use `org' and don't want your org files in the default location below,
-;; change `org-directory'. It must be set before org loads!
-(setq org-directory "~/org/")
-
-
-;; Whenever you reconfigure a package, make sure to wrap your config in an
-;; `with-eval-after-load' block, otherwise Doom's defaults may override your
-;; settings. E.g.
-;;
-;;   (with-eval-after-load 'PACKAGE
-;;     (setq x y))
-;;
-;; The exceptions to this rule:
-;;
-;;   - Setting file/directory variables (like `org-directory')
-;;   - Setting variables which explicitly tell you to set them before their
-;;     package is loaded (see 'C-h v VARIABLE' to look them up).
-;;   - Setting doom variables (which start with 'doom-' or '+').
-;;
-;; Here are some additional functions/macros that will help you configure Doom.
-;;
-;; - `load!' for loading external *.el files relative to this one
-;; - `add-load-path!' for adding directories to the `load-path', relative to
-;;   this file. Emacs searches the `load-path' when you load packages with
-;;   `require' or `use-package'.
-;; - `map!' for binding new keys
-;;
-;; To get information about any of these functions/macros, move the cursor over
-;; the highlighted symbol at press 'K' (non-evil users must press 'C-c c k').
-;; This will open documentation for it, including demos of how they are used.
-;; Alternatively, use `C-h o' to look up a symbol (functions, variables, faces,
-;; etc).
-;;
-;; You can also try 'gd' (or 'C-c c d') to jump to their definition and see how
-;; they are implemented.
-
-;; Treemacs icon padding — must be set before nerd-icons theme loads (see Treemacs section below)
+;; Must be set before nerd-icons theme loads (treemacs icon alignment)
 (defvar treemacs-nerd-icons-tab " ")
 
-;; Theme
 (add-to-list 'custom-theme-load-path (expand-file-name "~/.config/doom/"))
 (setq doom-theme 'boss)
-
-;; Config
 (setq doom-font (font-spec :family "Menlo" :size 13)
       doom-font-increment 1)
 (setq default-directory "~/.config/doom/")
+(setq org-directory "~/org/")
 (global-visual-line-mode 1)
-(setq max-mini-window-height 1)  ; limit minibuffer to 1 line (prevents vterm redraws)
-(setq eldoc-echo-area-use-multiline-p 1)  ; limit eldoc to 1 line in minibuffer
+(setq max-mini-window-height 1)
+(setq eldoc-echo-area-use-multiline-p 1)
 
 (defvar cmg/sidebar-width 90
   "The default width for all sidebar windows (Terminals, Claude, etc).")
+;; Declare dynamic var for lexical-binding compatibility
+(defvar vterm-shell)
 
-(defvar vterm-shell)  ; declare dynamic var for lexical-binding compatibility
-
-;; Workspace-aware terminal naming: {workspace}:Term:{N}, {workspace}:Claude
+;; ——————————————————————————————————————————————————————————————————
+;; Core Functions
+;; Utility functions used throughout the config — must be defined early.
 (defun cmg/workspace-name ()
   "Return the current workspace name for terminal prefixing."
   (if (bound-and-true-p persp-mode)
@@ -148,17 +85,34 @@ falling back to doom-project-root and default-directory."
     (+dashboard/open (selected-frame))
     (message "Killed %d buffer%s" (length bufs) (if (= (length bufs) 1) "" "s"))))
 
+;; Must be defined before doom-after-init-hook (startup) because
+;; the hook fires while config.el is still loading via Doom's init sequence.
+(defun cmg/create-sidebar-terminal (&optional project-dir)
+  "Create a new terminal buffer in a fresh sidebar split.
+PROJECT-DIR overrides the terminal's working directory."
+  (let* ((ws (cmg/workspace-name))
+         (buf (generate-new-buffer (format "%s:Term:new" ws)))
+         (win (split-window (frame-root-window) (- cmg/sidebar-width) 'right)))
+    (cmg/set-sidebar-window-params win)
+    (select-window win)
+    (switch-to-buffer buf)
+    (set-window-fringes win 15 0)
+    (with-current-buffer buf
+      (setq default-directory (or project-dir (cmg/project-root))))
+    (vterm-mode)
+    (when (bound-and-true-p persp-mode)
+      (persp-add-buffer buf))
+    (cmg/reindex-terminals)))
 
-;; Line numbers — minimal padding
+;; ——————————————————————————————————————————————————————————————————
+;; Windows
+;; ——————————————————————————————————————————————————————————————————
+
 (setq display-line-numbers-width 2)
-
-;; Auto-revert buffers when files change on disk
+(setq display-line-numbers-type 'relative)
 (setq auto-revert-interval 1)
 (global-auto-revert-mode 1)
-
-;; Window
 (setq initial-frame-alist '((fullscreen . fullboth) (vertical-scroll-bars . nil) (horizontal-scroll-bars . nil)))
-(setq display-line-numbers-type 'relative)
 ;; Enable line numbers and hl-line for fundamental-mode (Doom only enables for prog/text modes)
 (add-hook 'fundamental-mode-hook #'display-line-numbers-mode)
 (add-hook 'fundamental-mode-hook #'hl-line-mode)
@@ -195,7 +149,7 @@ falling back to doom-project-root and default-directory."
             (non-sidebar-wins (cl-remove-if
                                (lambda (w)
                                  (or (window-parameter w 'side-drawer)
-                                     (eq (window-buffer w) (treemacs-get-local-buffer))))
+                                     (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
                                (window-list))))
         (let* ((other-win (cl-find-if (lambda (w) (not (eq w (selected-window))))
                                       non-sidebar-wins))
@@ -205,7 +159,11 @@ falling back to doom-project-root and default-directory."
           (apply fn file args)))
     (apply fn file args)))
 
-;; Global keybindings
+;; ——————————————————————————————————————————————————————————————————
+;; Keybindings
+;; ——————————————————————————————————————————————————————————————————
+
+;; Window navigation
 (map! "C-h" #'evil-window-left
       "C-j" #'evil-window-down
       "C-k" #'evil-window-up
@@ -218,9 +176,9 @@ falling back to doom-project-root and default-directory."
 (after! eglot
   (map! :map eglot-mode-map :n "g r" #'+lookup/references))
 
-;; Project Layout
-
-;; Custom dashboard: replace banner with project info
+;; ——————————————————————————————————————————————————————————————————
+;; Dashboard
+;; ——————————————————————————————————————————————————————————————————
 (defun cmg/dashboard-ascii-banner ()
   "Project header as the dashboard banner."
   (let* ((project-root (cmg/project-root))
@@ -281,6 +239,11 @@ falling back to doom-project-root and default-directory."
         (set-persp-parameter 'last-project-root project-dir))
       (+dashboard-reload t))))
 
+;; Hide hl-line in dashboard
+(add-hook '+dashboard-mode-hook
+          (lambda ()
+            (face-remap-add-relative 'hl-line :background (doom-color 'bg))))
+
 (defun cmg/project-layout (&optional dir)
   "Set up the default 3-pane layout: treemacs | dashboard | terminal.
 Skips if the current workspace already has sidebar buffers."
@@ -300,6 +263,10 @@ Skips if the current workspace already has sidebar buffers."
         (windmove-left))
       ;; One clean reload with the correct project
       (cmg/refresh-dashboard project-dir))))
+
+;; ——————————————————————————————————————————————————————————————————
+;; Workspaces
+;; ——————————————————————————————————————————————————————————————————
 
 (after! persp-mode
   (setq +workspaces-switch-project-function #'cmg/project-layout)
@@ -365,24 +332,7 @@ Skips if the current workspace already has sidebar buffers."
 
 (add-hook 'kill-emacs-hook #'cmg/save-last-project)
 
-(defun cmg/create-sidebar-terminal (&optional project-dir)
-  "Create a new terminal buffer in a fresh sidebar split.
-PROJECT-DIR overrides the terminal's working directory."
-  (let* ((ws (cmg/workspace-name))
-         (buf (generate-new-buffer (format "%s:Term:new" ws)))
-         (win (split-window (frame-root-window) (- cmg/sidebar-width) 'right)))
-    (cmg/set-sidebar-window-params win)
-    (select-window win)
-    (switch-to-buffer buf)
-    (set-window-fringes win 15 0)
-    (with-current-buffer buf
-      (setq default-directory (or project-dir (cmg/project-root))))
-    (vterm-mode)
-    (when (bound-and-true-p persp-mode)
-      (persp-add-buffer buf))
-    (cmg/reindex-terminals)))
-
-;; Workspace setup: rename + dashboard on doom-after-init (fast, no frame needed)
+;; Startup: restore workspace immediately, defer terminal until frame is sized
 (defvar cmg/startup-dir nil)
 (add-hook 'doom-after-init-hook
           (lambda ()
@@ -414,7 +364,11 @@ PROJECT-DIR overrides the terminal's working directory."
     (remove-hook 'window-size-change-functions #'cmg/startup-create-terminal)))
 (add-hook 'window-size-change-functions #'cmg/startup-create-terminal)
 
+;; ——————————————————————————————————————————————————————————————————
 ;; Buffers
+;; Ex commands: context-aware :q/:wq/:q!/:qa/:wqa
+;; ——————————————————————————————————————————————————————————————————
+
 (evil-ex-define-cmd "q" (lambda ()
                           (interactive)
                           (cond
@@ -467,7 +421,9 @@ PROJECT-DIR overrides the terminal's working directory."
                                     (with-editor-finish nil)
                                   (evil-save-and-quit))))
 
-;; Git blame for current line
+;; ——————————————————————————————————————————————————————————————————
+;; Git
+;; ——————————————————————————————————————————————————————————————————
 (defun cmg/git-blame-line ()
   "Show git blame info for the current line in the minibuffer with PR link."
   (interactive)
@@ -505,7 +461,7 @@ PROJECT-DIR overrides the terminal's working directory."
           (when (eq (read-key) ?\r)
             (browse-url pr-url)))))))
 
-;; Git links
+;; Remote URL helpers
 (defun cmg/browse-at-remote-kill-symbolic ()
   "Copy remote URL using branch name instead of commit hash."
   (interactive)
@@ -532,7 +488,7 @@ PROJECT-DIR overrides the terminal's working directory."
                  (non-sidebar-wins (cl-remove-if
                                     (lambda (w)
                                       (or (window-parameter w 'side-drawer)
-                                          (eq (window-buffer w) (treemacs-get-local-buffer))))
+                                          (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
                                     (window-list)))
                  (target-win (cond
                               ;; Commit message: use selected window so it gets focus
@@ -611,7 +567,9 @@ PROJECT-DIR overrides the terminal's working directory."
   (magit-diff-range (concat "main...")))
 
 
-;; Modeline — buffer info only, no branch/pyenv/etc
+;; ——————————————————————————————————————————————————————————————————
+;; Modeline
+;; ——————————————————————————————————————————————————————————————————
 (after! doom-modeline
   (setq doom-modeline-env-version nil)  ; hide pyenv version from major-mode segment
   (doom-modeline-def-modeline 'main
@@ -626,7 +584,7 @@ PROJECT-DIR overrides the terminal's working directory."
     '(bar modals buffer-default-directory-simple)
     '(major-mode)))
 
-;; Leader key bindings
+;; Leader map
 (map! :leader
       ;; Buffer — switch to last buffer, but stay in sidebar if in sidebar
       :desc "Switch to last buffer" "b l"
@@ -714,12 +672,9 @@ PROJECT-DIR overrides the terminal's working directory."
 (after! which-key
   (push '(("override-state" . nil) . t) which-key-replacement-alist))
 
-;; Hide hl-line in dashboard
-(add-hook '+dashboard-mode-hook
-          (lambda ()
-            (face-remap-add-relative 'hl-line :background (doom-color 'bg))))
-
-
+;; ——————————————————————————————————————————————————————————————————
+;; Treemacs
+;; ——————————————————————————————————————————————————————————————————
 
 (defun cmg/treemacs-open-in-split ()
   "Open treemacs file at point in the other main split, or create one."
@@ -743,7 +698,6 @@ PROJECT-DIR overrides the terminal's working directory."
           (select-window target)
           (find-file file))))))
 
-;; Treemacs: lighter hl-line, hide modeline and line numbers, prevent q from killing
 (after! treemacs
   ;; Disable file watching — hits macOS fd limits and causes arrayp errors
   (treemacs-filewatch-mode -1)
@@ -825,7 +779,7 @@ PROJECT-DIR overrides the terminal's working directory."
         treemacs-width 30
         treemacs-width-is-initially-locked t))
 
-;; Jump to sidebar window
+;; Sidebar/main window toggle (C-;) and buffer movement (SPC w h/j/k/l)
 (map! :nvig (kbd "C-;") #'cmg/focus-sidebar)
 (defvar cmg/last-main-window nil)
 (add-hook 'window-selection-change-functions
@@ -863,15 +817,15 @@ PROJECT-DIR overrides the terminal's working directory."
     (when-let ((win (cl-find-if (lambda (w) (window-parameter w 'side-drawer)) (window-list))))
       (select-window win))))
 
-;; Remappings
+;; Visual line movement and remappings
 (map! :nm "j" #'evil-next-visual-line)
 (map! :nm "k" #'evil-previous-visual-line)
 (map! :nm "U" #'undo-fu-only-redo)
 (map! :n "g b" #'xref-go-back)
 
+;; ——————————————————————————————————————————————————————————————————
 ;; Python
-;; Disable ruff checker — pyright via eglot handles diagnostics.
-;; Must run after flycheck loads since it resets the checker list.
+;; ——————————————————————————————————————————————————————————————————
 (after! flycheck
   (setq flycheck-checkers (delq 'python-ruff flycheck-checkers)))
 
@@ -929,7 +883,10 @@ PROJECT-DIR overrides the terminal's working directory."
                    eglot--servers-by-project)
           nil))))
 
+;; ——————————————————————————————————————————————————————————————————
 ;; Claude
+;; ——————————————————————————————————————————————————————————————————
+
 (defun cmg/open-claude-sidebar ()
   "Launch Claude in the sidebar drawer with absolute width control."
   (interactive)
@@ -1028,7 +985,9 @@ PROJECT-DIR overrides the terminal's working directory."
       (message "No Flycheck error found here!"))))
 
 
-;; Sidebar —————————————————————————————————————————————————————————
+;; ——————————————————————————————————————————————————————————————————
+;; Sidebar
+;; ——————————————————————————————————————————————————————————————————
 
 ;; Hide sidebar buffers from buffer switch list (SPC b b, etc.)
 (add-to-list 'doom-unreal-buffer-functions #'cmg/sidebar-buffer-p)
@@ -1099,7 +1058,9 @@ PROJECT-DIR overrides the terminal's working directory."
       (set-window-dedicated-p win t))))
 (add-hook 'window-buffer-change-functions (lambda (_) (cmg/maybe-dedicate-sidebar-window)))
 
-;; Deadgrep — search results in sidebar
+;; ——————————————————————————————————————————————————————————————————
+;; Deadgrep
+;; ——————————————————————————————————————————————————————————————————
 (after! deadgrep
   (setq deadgrep-display-buffer-function
         (lambda (buf)
@@ -1166,7 +1127,9 @@ PROJECT-DIR overrides the terminal's working directory."
                  (when win (select-window win))
                  (find-file file-name))))))
 
-;; Terminal —————————————————————————————————————————————————————————
+;; ——————————————————————————————————————————————————————————————————
+;; Terminal
+;; ——————————————————————————————————————————————————————————————————
 
 (setq vterm-shell "/bin/bash")
 (setq vterm-kill-buffer-on-exit t)
@@ -1558,7 +1521,9 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
                                                                 (delete-window win)))))))
                                 (run-at-time "0.1 sec" nil #'cmg/reindex-terminals))))
 
-;; Top bar — system stats
+;; ——————————————————————————————————————————————————————————————————
+;; Top Bar
+;; ——————————————————————————————————————————————————————————————————
 (defvar cmg/hw-memsize nil)
 (defvar cmg/hw-ncpu nil)
 (defvar cmg/net-prev-in 0)
