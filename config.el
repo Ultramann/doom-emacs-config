@@ -1739,7 +1739,8 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
 ))))
                             (list (list 'unsaved 'menu-item label 'ignore
                                       :help (format "Unsaved buffers: %s" names)))))))
-  `(,@unsaved-item
+  `((pad menu-item ,(propertize " " 'face `(:box (:line-width (2 . 2) :color ,(doom-color 'bg-alt)))) ignore)
+    ,@unsaved-item
     (branch menu-item ,cmg/tab-bar-branch-cache ignore)
     (cal-spacer menu-item
                 ,(propertize " " 'display `(space :align-to ,(+ 2 (or (bound-and-true-p treemacs-width) 30))))
