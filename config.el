@@ -582,7 +582,26 @@ Skips if the current workspace already has sidebar buffers."
   ;; Clean dashboard modeline
   (doom-modeline-def-modeline 'dashboard
     '(bar modals buffer-default-directory-simple)
-    '(major-mode)))
+    '(major-mode))
+  ;; Vterm modeline: just the evil state icon, right-aligned
+  (doom-modeline-def-segment vterm-evil-state
+    (let* ((state (if (bound-and-true-p evil-local-mode) evil-state 'insert))
+           (icon (pcase state
+                   ('normal "\xf0c13")
+                   ('insert "\xf0c04")
+                   ('visual "\xf0c2b")
+                   (_       "\xf0c04")))
+           (face (if cmg/vterm-focused
+                     (pcase state
+                       ('normal 'doom-modeline-evil-normal-state)
+                       ('insert 'doom-modeline-evil-insert-state)
+                       ('visual 'doom-modeline-evil-visual-state)
+                       (_       'doom-modeline-evil-insert-state))
+                   `(:foreground ,(doom-color 'base5)))))
+      (propertize (format " %s   " icon) 'face face)))
+  (doom-modeline-def-modeline 'vterm
+    '(bar)
+    '(vterm-evil-state)))
 
 ;; Leader map
 (map! :leader
@@ -1418,20 +1437,6 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
          (sorted-terms (cl-sort all-terminals #'string-lessp :key #'buffer-name)))
     (concat
      " "
-     (let* ((state (if (bound-and-true-p evil-local-mode) evil-state 'insert))
-            (icon (pcase state
-                    ('normal "\xf0c13")   ; nf-md-alpha_n_circle
-                    ('insert "\xf0c04")   ; nf-md-alpha_i_circle
-                    ('visual "\xf0c2b")   ; nf-md-alpha_v_circle
-                    (_       "\xf0c04")))
-            (face (if cmg/vterm-focused
-                      (pcase state
-                        ('normal 'doom-modeline-evil-normal-state)
-                        ('insert 'doom-modeline-evil-insert-state)
-                        ('visual 'doom-modeline-evil-visual-state)
-                        (_       'doom-modeline-evil-insert-state))
-                    `(:foreground ,(doom-color 'base5)))))
-       (propertize (format " %s " icon) 'face face))
      (mapconcat
       (lambda (buf)
         (let* ((display-name (cmg/terminal-display-name buf))
@@ -1475,7 +1480,7 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
               (setq-local buffer-display-table dt))
 
             (display-line-numbers-mode -1)
-            (setq-local mode-line-format " ")
+            (doom-modeline-set-modeline 'vterm)
             (set-window-fringes (selected-window) 15 0)
             (set-process-query-on-exit-flag (get-buffer-process (current-buffer)) nil)
 
