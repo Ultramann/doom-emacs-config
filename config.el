@@ -365,28 +365,54 @@ Skips if the current workspace already has sidebar buffers."
 
 (add-hook 'kill-emacs-hook #'cmg/save-last-project)
 
+(defun cmg/create-sidebar-terminal (&optional project-dir)
+  "Create a new terminal buffer in a fresh sidebar split.
+PROJECT-DIR overrides the terminal's working directory."
+  (let* ((ws (cmg/workspace-name))
+         (buf (generate-new-buffer (format "%s:Term:new" ws)))
+         (win (split-window (frame-root-window) (- cmg/sidebar-width) 'right)))
+    (cmg/set-sidebar-window-params win)
+    (select-window win)
+    (switch-to-buffer buf)
+    (set-window-fringes win 15 0)
+    (with-current-buffer buf
+      (setq default-directory (or project-dir (cmg/project-root))))
+    (vterm-mode)
+    (when (bound-and-true-p persp-mode)
+      (persp-add-buffer buf))
+    (cmg/reindex-terminals)))
+
+;; Workspace setup: rename + dashboard on doom-after-init (fast, no frame needed)
+(defvar cmg/startup-dir nil)
 (add-hook 'doom-after-init-hook
           (lambda ()
-            (run-with-idle-timer 0.5 nil
-              (lambda ()
-                (let* ((last-project (when (file-exists-p cmg/last-project-file)
-                                       (string-trim (with-temp-buffer
-                                                      (insert-file-contents cmg/last-project-file)
-                                                      (buffer-string)))))
-                       (startup-dir (if (and last-project
+            (let* ((last-project (when (file-exists-p cmg/last-project-file)
+                                   (string-trim (with-temp-buffer
+                                                  (insert-file-contents cmg/last-project-file)
+                                                  (buffer-string))))))
+              (setq cmg/startup-dir (if (and last-project
                                              (file-directory-p last-project)
                                              (not (string= last-project "~/.config/doom/")))
                                        last-project
-                                     "~/.config/doom/")))
-                  (let ((inhibit-redisplay t))
-                    (when (bound-and-true-p persp-mode)
-                      (+workspace-rename "main"
-                                         (file-name-nondirectory
-                                          (directory-file-name startup-dir)))
-                      (set-persp-parameter '+workspace-project startup-dir))
-                    (cmg/project-layout startup-dir))
-                  (redisplay t)))))
+                                     "~/.config/doom/"))
+              (when (bound-and-true-p persp-mode)
+                (+workspace-rename "main"
+                                   (file-name-nondirectory
+                                    (directory-file-name cmg/startup-dir)))
+                (set-persp-parameter '+workspace-project cmg/startup-dir))
+              (setq default-directory cmg/startup-dir)
+              (cmg/refresh-dashboard cmg/startup-dir)))
           100)
+;; Terminal creation: needs fullscreen frame, wait for frame to be wide enough
+(defun cmg/startup-create-terminal (&optional _frame)
+  "Create the startup terminal once the frame is wide enough."
+  (when (and cmg/startup-dir
+             (not (cmg/workspace-sidebar-buffers))
+             (> (frame-width) (+ cmg/sidebar-width 40)))
+    (cmg/create-sidebar-terminal cmg/startup-dir)
+    (windmove-left)
+    (remove-hook 'window-size-change-functions #'cmg/startup-create-terminal)))
+(add-hook 'window-size-change-functions #'cmg/startup-create-terminal)
 
 ;; Buffers
 (evil-ex-define-cmd "q" (lambda ()
@@ -1144,23 +1170,6 @@ Skips if the current workspace already has sidebar buffers."
 
 (setq vterm-shell "/bin/bash")
 (setq vterm-kill-buffer-on-exit t)
-
-(defun cmg/create-sidebar-terminal (&optional project-dir)
-  "Create a new terminal buffer in a fresh sidebar split.
-PROJECT-DIR overrides the terminal's working directory."
-  (let* ((ws (cmg/workspace-name))
-         (buf (generate-new-buffer (format "%s:Term:new" ws)))
-         (win (split-window (frame-root-window) (- cmg/sidebar-width) 'right)))
-    (cmg/set-sidebar-window-params win)
-    (select-window win)
-    (switch-to-buffer buf)
-    (set-window-fringes win 15 0)
-    (with-current-buffer buf
-      (setq default-directory (or project-dir (cmg/project-root))))
-    (vterm-mode)
-    (when (bound-and-true-p persp-mode)
-      (persp-add-buffer buf))
-    (cmg/reindex-terminals)))
 
 (defun cmg/open-new-sidebar-terminal ()
   "Add a terminal to the existing sidebar, or create one if none exists."
