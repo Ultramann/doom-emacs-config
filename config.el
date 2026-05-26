@@ -1514,6 +1514,16 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
 (add-hook 'evil-visual-state-entry-hook #'cmg/update-vterm-focus)
 (add-hook 'doom-switch-buffer-hook #'cmg/update-vterm-focus)
 
+;; Allow opening files from vterm via `open <file>`
+(defun cmg/vterm-find-file (file)
+  "Open FILE in the main (non-sidebar) window."
+  (let ((win (cl-find-if (lambda (w)
+                           (not (window-parameter w 'side-drawer)))
+                         (window-list))))
+    (when win (select-window win))
+    (find-file file)))
+(after! vterm
+  (add-to-list 'vterm-eval-cmds '("find-file" cmg/vterm-find-file)))
 ;; Undedicate window before vterm kills the buffer on exit
 (after! vterm
   (add-to-list 'vterm-exit-functions
