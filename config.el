@@ -345,24 +345,27 @@ Skips if the current workspace already has sidebar buffers."
                                              (not (string= last-project "~/.config/doom/")))
                                        last-project
                                      "~/.config/doom/"))
-              (when (bound-and-true-p persp-mode)
-                (+workspace-rename "main"
-                                   (file-name-nondirectory
-                                    (directory-file-name cmg/startup-dir)))
-                (set-persp-parameter '+workspace-project cmg/startup-dir))
               (setq default-directory cmg/startup-dir)
-              (cmg/refresh-dashboard cmg/startup-dir)))
+              ;; Defer rename + dashboard + terminal until persp-mode is fully initialized
+              (run-with-idle-timer 0.1 nil
+                (lambda ()
+                  (when (bound-and-true-p persp-mode)
+                    (+workspace-rename "main"
+                                       (file-name-nondirectory
+                                        (directory-file-name cmg/startup-dir)))
+                    (set-persp-parameter '+workspace-project cmg/startup-dir))
+                  (cmg/refresh-dashboard cmg/startup-dir)
+                  ;; Wait for fullscreen frame before creating terminal
+                  (defun cmg/startup-create-terminal (&optional _frame)
+                    (when (and (not (cmg/workspace-sidebar-buffers))
+                               (> (frame-width) (+ cmg/sidebar-width 40)))
+                      (cmg/create-sidebar-terminal cmg/startup-dir)
+                      (windmove-left)
+                      (remove-hook 'window-size-change-functions #'cmg/startup-create-terminal)))
+                  (if (> (frame-width) (+ cmg/sidebar-width 40))
+                      (cmg/startup-create-terminal)
+                    (add-hook 'window-size-change-functions #'cmg/startup-create-terminal))))))
           100)
-;; Terminal creation: needs fullscreen frame, wait for frame to be wide enough
-(defun cmg/startup-create-terminal (&optional _frame)
-  "Create the startup terminal once the frame is wide enough."
-  (when (and cmg/startup-dir
-             (not (cmg/workspace-sidebar-buffers))
-             (> (frame-width) (+ cmg/sidebar-width 40)))
-    (cmg/create-sidebar-terminal cmg/startup-dir)
-    (windmove-left)
-    (remove-hook 'window-size-change-functions #'cmg/startup-create-terminal)))
-(add-hook 'window-size-change-functions #'cmg/startup-create-terminal)
 
 ;; ——————————————————————————————————————————————————————————————————
 ;; Buffers
@@ -1734,8 +1737,8 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
                                          (lambda (b) (file-name-nondirectory (buffer-file-name b)))
                                          unsaved-bufs ", "))
                                  (label (concat "  " (propertize (format " %d " unsaved)
-                                                                  'face (list :foreground (doom-color 'orange)
-                                                                              :box (list :line-width -1 :color (doom-color 'orange)))
+                                                                  'face (list :foreground (doom-color 'yellow)
+                                                                              :box (list :line-width -1 :color (doom-color 'yellow)))
 ))))
                             (list (list 'unsaved 'menu-item label 'ignore
                                       :help (format "Unsaved buffers: %s" names)))))))
