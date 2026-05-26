@@ -1514,6 +1514,13 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
 (add-hook 'evil-visual-state-entry-hook #'cmg/update-vterm-focus)
 (add-hook 'doom-switch-buffer-hook #'cmg/update-vterm-focus)
 
+;; Undedicate window before vterm kills the buffer on exit
+(after! vterm
+  (add-to-list 'vterm-exit-functions
+               (lambda (buf _event)
+                 (when-let ((win (and (buffer-live-p buf)
+                                      (get-buffer-window buf))))
+                   (set-window-dedicated-p win nil)))))
 (add-hook 'vterm-exit-hook #'cmg/reindex-terminals)
 ;; Also catch if the buffer is killed manually without the process exiting
 (add-hook 'kill-buffer-hook (lambda ()
