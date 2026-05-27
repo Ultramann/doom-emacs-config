@@ -840,6 +840,21 @@ Skips if the current workspace already has sidebar buffers."
 (defun cmg/move-buffer-up ()    (interactive) (cmg/move-buffer-to 'up))
 (defun cmg/move-buffer-down ()  (interactive) (cmg/move-buffer-to 'down))
 
+;; If a file is already visible in a non-sidebar window, select that window
+;; instead of opening a duplicate in the current split
+(defadvice! cmg/find-file-reuse-window-a (orig-fn filename &rest args)
+  :around #'find-file
+  (let* ((filename (expand-file-name filename))
+         (buf (find-buffer-visiting filename))
+         (win (and buf
+                   (cl-find-if (lambda (w)
+                                 (and (eq (window-buffer w) buf)
+                                      (not (window-parameter w 'side-drawer))))
+                               (window-list)))))
+    (if win
+        (select-window win)
+      (apply orig-fn filename args))))
+
 (defun cmg/kill-non-sidebar-buffers ()
   "Kill all buffers except sidebar buffers, the dashboard, and the current buffer."
   (interactive)
