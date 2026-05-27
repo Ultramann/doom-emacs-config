@@ -929,6 +929,14 @@ Skips if the current workspace already has sidebar buffers."
         (if (string-empty-p python-path) (list)
           (list :python (list :pythonPath python-path))))))
   (setq-default eglot-workspace-configuration #'cmg/eglot-python-config)
+  ;; Filter out hint-level diagnostics (severity 4) — pyright sends these
+  ;; for unused variables etc. but the CLI doesn't report them
+  (cl-defmethod eglot-handle-notification
+    (server (_method (eql textDocument/publishDiagnostics))
+            &rest params &key uri diagnostics version &allow-other-keys)
+    (let ((filtered (cl-remove-if (lambda (d) (= (plist-get d :severity) 4)) diagnostics)))
+      (cl-call-next-method server _method
+                           :uri uri :version version :diagnostics filtered)))
   ;; Disable LSP file watching
   (cl-defmethod eglot-register-capability
     (_server (_method (eql workspace/didChangeWatchedFiles)) &rest _args)
