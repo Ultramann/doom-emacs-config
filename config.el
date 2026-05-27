@@ -1137,6 +1137,22 @@ Skips if the current workspace already has sidebar buffers."
 ;; ——————————————————————————————————————————————————————————————————
 ;; Deadgrep
 ;; ——————————————————————————————————————————————————————————————————
+(after! doom-modeline
+  (doom-modeline-def-segment deadgrep-hints
+    (concat
+     (propertize " /" 'face `(:foreground ,(doom-color 'fg) :weight bold))
+     (propertize " search  " 'face `(:foreground ,(doom-color 'base7)))
+     (propertize "t" 'face `(:foreground ,(doom-color 'fg) :weight bold))
+     (propertize " type  " 'face `(:foreground ,(doom-color 'base7)))
+     (propertize "c" 'face `(:foreground ,(doom-color 'fg) :weight bold))
+     (propertize " case  " 'face `(:foreground ,(doom-color 'base7)))
+     (propertize "f" 'face `(:foreground ,(doom-color 'fg) :weight bold))
+     (propertize " files" 'face `(:foreground ,(doom-color 'base7)))))
+
+  (doom-modeline-def-modeline 'deadgrep
+    '(bar deadgrep-hints)
+    '()))
+
 (after! deadgrep
   (setq deadgrep-display-buffer-function
         (lambda (buf)
@@ -1149,13 +1165,11 @@ Skips if the current workspace already has sidebar buffers."
             (switch-to-buffer buf)
             (set-window-dedicated-p win t))))
 
-  ;; Kill deadgrep processes silently on Emacs exit
-  (add-hook 'kill-emacs-hook
-            (lambda ()
-              (dolist (buf (buffer-list))
-                (when (and (string-match-p "^\\*deadgrep " (buffer-name buf))
-                           (get-buffer-process buf))
-                  (set-process-query-on-exit-flag (get-buffer-process buf) nil)))))
+  ;; Never prompt about deadgrep processes on exit
+  (advice-add 'deadgrep--start :after
+              (lambda (&rest _)
+                (when-let ((proc (get-buffer-process (current-buffer))))
+                  (set-process-query-on-exit-flag proc nil))))
 
   (add-hook 'deadgrep-mode-hook
             (lambda ()
@@ -1169,16 +1183,7 @@ Skips if the current workspace already has sidebar buffers."
                         nil t)
               (setq tab-line-format '(:eval (cmg/get-terminal-tabs)))
               (setq header-line-format " ")
-              (setq-local mode-line-format
-                          `(" "
-                            ,(propertize "s" 'face `(:foreground ,(doom-color 'red) :weight bold))
-                            ,(propertize " search  " 'face `(:foreground ,(doom-color 'base7)))
-                            ,(propertize "c" 'face `(:foreground ,(doom-color 'red) :weight bold))
-                            ,(propertize " case  " 'face `(:foreground ,(doom-color 'base7)))
-                            ,(propertize "t" 'face `(:foreground ,(doom-color 'red) :weight bold))
-                            ,(propertize " type  " 'face `(:foreground ,(doom-color 'base7)))
-                            ,(propertize "f" 'face `(:foreground ,(doom-color 'red) :weight bold))
-                            ,(propertize " files" 'face `(:foreground ,(doom-color 'base7)))))
+              (doom-modeline-set-modeline 'deadgrep)
               (face-remap-add-relative 'header-line
                                        :background (doom-color 'bg)
                                        :box nil :overline nil :underline nil
@@ -1188,20 +1193,41 @@ Skips if the current workspace already has sidebar buffers."
   (add-hook 'deadgrep-mode-hook (lambda () (evil-snipe-local-mode -1)))
   (evil-define-key* 'normal deadgrep-mode-map
     "q" #'ignore
-    "s" #'deadgrep-search-term
+    "/" #'deadgrep-search-term
     "c" #'deadgrep-cycle-search-case
     "t" #'deadgrep-cycle-search-type
-    "f" #'deadgrep-cycle-files)
+    "f" (cmd! (let* ((current (when (eq (car-safe deadgrep--file-type) 'glob)
+                                (cdr deadgrep--file-type)))
+                     (input (read-from-minibuffer
+                             "Globs (*.py, !*.{json,lock}, !etl/, space-separated): "
+                             current)))
+                (if (string-empty-p input)
+                    (setq deadgrep--file-type 'all)
+                  (setq deadgrep--file-type (cons 'glob input)))
+                (deadgrep-restart))))
+
+  ;; Support multiple space-separated globs
+  (defadvice! +deadgrep-multi-glob-a (orig-fn &rest args)
+    :around #'deadgrep--arguments
+    (let ((result (apply orig-fn args)))
+      (when (and (eq (car-safe deadgrep--file-type) 'glob)
+                 (string-match-p " " (cdr deadgrep--file-type)))
+        (setq result (cl-remove-if (lambda (a) (string-prefix-p "--glob=" a)) result))
+        (dolist (glob (split-string (cdr deadgrep--file-type)))
+          (push (format "--glob=%s" glob) result)))
+      result))
 
   (defadvice! +deadgrep-open-in-main-a (fn open-fn)
     :around #'deadgrep--visit-result
-    (funcall fn
-             (lambda (file-name)
-               (let ((win (cl-find-if (lambda (w)
-                                        (not (window-parameter w 'side-drawer)))
-                                      (window-list))))
-                 (when win (select-window win))
-                 (find-file file-name))))))
+    (let ((search-dir default-directory))
+      (funcall fn
+               (lambda (file-name)
+                 (let ((win (cl-find-if (lambda (w)
+                                          (not (window-parameter w 'side-drawer)))
+                                        (window-list))))
+                   (when win (select-window win))
+                   (let ((default-directory search-dir))
+                     (find-file file-name))))))))
 
 ;; ——————————————————————————————————————————————————————————————————
 ;; Terminal
