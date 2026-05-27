@@ -560,11 +560,11 @@ Skips if the current workspace already has sidebar buffers."
     '("f" "Pull" magit-pull))
   (transient-replace-suffix 'magit-dispatch "F"
     '("F" "Fetch" magit-fetch))
-  ;; In pull menu: swap f and u (f = upstream, u = pushRemote)
+  ;; In pull menu: f = upstream (first), u = pushRemote
   (transient-replace-suffix 'magit-pull "p"
-    '("u" "pushRemote, setting that" magit-pull-from-pushremote))
-  (transient-replace-suffix 'magit-pull "u"
     '("f" magit-pull-from-upstream))
+  (transient-replace-suffix 'magit-pull "u"
+    '("u" "pushRemote, setting that" magit-pull-from-pushremote))
   ;; In fetch menu: f = pushRemote (instead of p)
   (transient-replace-suffix 'magit-fetch "p"
     '("f" "pushRemote, setting that" magit-fetch-from-pushremote))
