@@ -270,6 +270,12 @@ Skips if the current workspace already has sidebar buffers."
 
 (after! persp-mode
   (setq +workspaces-switch-project-function #'cmg/project-layout)
+  ;; Undedicate sidebar windows before killing workspace to prevent errors
+  (advice-add 'persp-kill :before
+              (lambda (&rest _)
+                (dolist (win (window-list))
+                  (when (window-parameter win 'side-drawer)
+                    (set-window-dedicated-p win nil)))))
   ;; Save last workspace project on quit, restore on startup
   (setq persp-auto-save-opt 0          ; don't auto-save full workspace state
         persp-auto-resume-time -1)     ; don't auto-restore
@@ -686,6 +692,10 @@ Skips if the current workspace already has sidebar buffers."
       ;; File
       :desc "Find file in project"     "f /" #'projectile-find-file
 
+      ;; Buffer
+      :desc "Log buffers"              "b L" #'cmg/switch-to-log-buffer
+      :desc "Kill all buffers"         "b K" #'cmg/kill-non-sidebar-buffers
+
       ;; View
       (:prefix ("v" . "view")
        :desc "Font larger"   "k" #'doom/increase-font-size
@@ -827,6 +837,25 @@ Skips if the current workspace already has sidebar buffers."
 (defun cmg/move-buffer-right () (interactive) (cmg/move-buffer-to 'right))
 (defun cmg/move-buffer-up ()    (interactive) (cmg/move-buffer-to 'up))
 (defun cmg/move-buffer-down ()  (interactive) (cmg/move-buffer-to 'down))
+
+(defun cmg/kill-non-sidebar-buffers ()
+  "Kill all buffers except sidebar buffers, the dashboard, and the current buffer."
+  (interactive)
+  (let ((current (current-buffer)))
+    (dolist (buf (buffer-list))
+      (unless (or (eq buf current)
+                  (cmg/sidebar-buffer-p buf)
+                  (eq buf (doom-fallback-buffer)))
+        (kill-buffer buf)))))
+
+(defun cmg/switch-to-log-buffer ()
+  "Switch to a *...*  buffer via completing-read."
+  (interactive)
+  (let* ((names (cl-remove-if-not
+                 (lambda (name) (string-prefix-p "*" name))
+                 (mapcar #'buffer-name (buffer-list))))
+         (choice (completing-read "Buffer: " names nil t)))
+    (switch-to-buffer choice)))
 
 (defun cmg/focus-sidebar ()
   "Toggle between sidebar and main window."
