@@ -186,7 +186,11 @@
    (consult-preview-match :background yellow :foreground bg)
    (consult-preview-line :background base3)
    ;; Flycheck popup
-   (popup-tip-face :foreground orange :background bg)))
+   (popup-tip-face :foreground orange :background bg)
+   ;; Deadgrep
+   (deadgrep-filename-face :foreground blue :weight 'bold :underline nil)
+   (deadgrep-meta-face :foreground base7)
+   (deadgrep-match-face :inherit 'lazy-highlight)))
 
 (doom-themes-set-faces 'boss)
 (provide-theme 'boss)
