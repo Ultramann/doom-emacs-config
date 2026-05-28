@@ -399,14 +399,25 @@ Skips if the current workspace already has sidebar buffers."
                                 (kill-buffer buf))))
                            ;; Everything else
                            (t
-                            (kill-current-buffer)
-                            ;; If we ended up showing a sidebar or special buffer, switch to dashboard
-                            (when (or (cmg/sidebar-buffer-p (current-buffer))
-                                      (not (doom-real-buffer-p (current-buffer))))
-                              (previous-buffer)
-                              (when (or (cmg/sidebar-buffer-p (current-buffer))
-                                        (not (doom-real-buffer-p (current-buffer))))
-                                (switch-to-buffer (doom-fallback-buffer))))))))
+                            (let ((main-wins (cmg/main-windows)))
+                              (kill-current-buffer)
+                              ;; If multiple main windows and no unique real buffer
+                              ;; left for this window, close the split
+                              (if (and (> (length main-wins) 1)
+                                       (or (cmg/sidebar-buffer-p (current-buffer))
+                                           (not (doom-real-buffer-p (current-buffer)))
+                                           (cl-find-if (lambda (w)
+                                                         (and (not (eq w (selected-window)))
+                                                              (eq (window-buffer w) (current-buffer))))
+                                                       main-wins)))
+                                  (delete-window)
+                                ;; Single window: fall back to dashboard
+                                (when (or (cmg/sidebar-buffer-p (current-buffer))
+                                          (not (doom-real-buffer-p (current-buffer))))
+                                  (previous-buffer)
+                                  (when (or (cmg/sidebar-buffer-p (current-buffer))
+                                            (not (doom-real-buffer-p (current-buffer))))
+                                    (switch-to-buffer (doom-fallback-buffer))))))))))
 (evil-ex-define-cmd "wq" (lambda ()
                           (interactive)
                           (if (bound-and-true-p with-editor-mode)
@@ -583,6 +594,11 @@ Skips if the current workspace already has sidebar buffers."
 ;; ——————————————————————————————————————————————————————————————————
 (after! doom-modeline
   (setq doom-modeline-env-version nil)  ; hide pyenv version from major-mode segment
+  ;; Hide checker segment when no checker is active
+  (advice-add 'doom-modeline-update-flycheck :after
+              (lambda (&optional status &rest _)
+                (when (eq (or status flycheck-last-status-change) 'no-checker)
+                  (setq doom-modeline--flycheck nil))))
   (doom-modeline-def-modeline 'main
     '(bar modals matches buffer-info buffer-position word-count selection-info)
     '(major-mode lsp check " "))
@@ -645,19 +661,13 @@ Skips if the current workspace already has sidebar buffers."
        "C-<right>" nil "C-<left>" nil "C-<up>" nil "C-<down>" nil
        "<right>" nil "<left>" nil "<up>" nil "<down>" nil
        "C-=" nil "g" nil
-       :desc "Swap window left"  "H" #'windmove-swap-states-left
-       :desc "Swap window down"  "J" #'windmove-swap-states-down
-       :desc "Swap window up"    "K" #'windmove-swap-states-up
-       :desc "Swap window right" "L" (cmd!
-                                      (let ((target (windmove-find-other-window 'right)))
-                                        (if (and target (window-parameter target 'side-drawer))
-                                            (message "No window right from selected window")
-                                          (windmove-swap-states-right))))
+       "H" nil "J" nil "K" nil "L" nil
        :desc "Move buffer left"  "h" #'cmg/move-buffer-left
        :desc "Move buffer down"  "j" #'cmg/move-buffer-down
        :desc "Move buffer up"    "k" #'cmg/move-buffer-up
        :desc "Move buffer right" "l" #'cmg/move-buffer-right
-       :desc "Kill workspace buffers" "D" #'cmg/kill-workspace-buffers)
+       :desc "Kill workspace buffers" "D" #'cmg/kill-workspace-buffers
+       :desc "Exchange buffers"       "x" #'cmg/exchange-main-buffers)
       ;; Toggle
       :desc "Toggle Treemacs"          "t t" #'treemacs
 
@@ -697,6 +707,15 @@ Skips if the current workspace already has sidebar buffers."
       ;; Buffer
       :desc "Log buffers"              "b L" #'cmg/switch-to-log-buffer
       :desc "Kill all buffers"         "b K" #'cmg/kill-non-sidebar-buffers
+      :desc "Clone buffer"             "b c" (cmd! (switch-to-buffer-other-window (current-buffer)))
+      :desc "Cone split buffer here"   "b C" (cmd!
+                                              (let* ((other (cl-find-if
+                                                             (lambda (w)
+                                                               (and (not (eq w (selected-window)))
+                                                                    (not (window-parameter w 'side-drawer))))
+                                                             (window-list))))
+                                                (when other
+                                                  (switch-to-buffer (window-buffer other)))))
 
       ;; View
       (:prefix ("v" . "view")
@@ -824,36 +843,77 @@ Skips if the current workspace already has sidebar buffers."
                                    (eq win (treemacs-get-local-window))))
                          (not (minibufferp (window-buffer win))))
                 (setq cmg/last-main-window win)))))
+
+(defun cmg/main-windows ()
+  "Return list of non-sidebar, non-treemacs, non-minibuffer windows."
+  (cl-remove-if
+   (lambda (w)
+     (or (window-parameter w 'side-drawer)
+         (and (fboundp 'treemacs-get-local-window)
+              (eq w (treemacs-get-local-window)))
+         (minibufferp (window-buffer w))))
+   (window-list)))
+
 (defun cmg/move-buffer-to (direction)
-  "Move current buffer to the window in DIRECTION, replacing that window's buffer."
-  (let ((buf (current-buffer))
-        (target (windmove-find-other-window direction)))
-    (when (and target
-               (not (window-parameter target 'side-drawer))
-               (not (eq target (treemacs-get-local-window))))
-      (set-window-buffer (selected-window) (other-buffer buf))
-      (set-window-buffer target buf)
-      (select-window target))))
+  "Move current buffer to the window in DIRECTION.
+If only one main window exists, create a split in that direction first."
+  (let* ((buf (current-buffer))
+         (target (windmove-find-other-window direction))
+         (target-ok (and target
+                         (not (window-parameter target 'side-drawer))
+                         (not (and (fboundp 'treemacs-get-local-window)
+                                   (eq target (treemacs-get-local-window)))))))
+    (if target-ok
+        (progn
+          (set-window-buffer (selected-window) (other-buffer buf))
+          (set-window-buffer target buf)
+          (select-window target))
+      ;; Only create a split if there's exactly one main window
+      (when (= (length (cmg/main-windows)) 1)
+        (let* ((side (pcase direction
+                       ((or 'left 'right) 'right)
+                       ((or 'up 'down) 'below)))
+               (new-win (split-window (selected-window) nil side)))
+          (set-window-buffer (selected-window) (other-buffer buf))
+          (set-window-buffer new-win buf)
+          (select-window new-win))))))
 
 (defun cmg/move-buffer-left ()  (interactive) (cmg/move-buffer-to 'left))
 (defun cmg/move-buffer-right () (interactive) (cmg/move-buffer-to 'right))
 (defun cmg/move-buffer-up ()    (interactive) (cmg/move-buffer-to 'up))
 (defun cmg/move-buffer-down ()  (interactive) (cmg/move-buffer-to 'down))
 
-;; If a file is already visible in a non-sidebar window, select that window
-;; instead of opening a duplicate in the current split
-(defadvice! cmg/find-file-reuse-window-a (orig-fn filename &rest args)
-  :around #'find-file
-  (let* ((filename (expand-file-name filename))
-         (buf (find-buffer-visiting filename))
-         (win (and buf
-                   (cl-find-if (lambda (w)
-                                 (and (eq (window-buffer w) buf)
-                                      (not (window-parameter w 'side-drawer))))
-                               (window-list)))))
-    (if win
-        (select-window win)
-      (apply orig-fn filename args))))
+;; SPC b l: switch to last buffer in this window, skipping buffers visible elsewhere
+(defadvice! cmg/switch-last-buffer-skip-visible-a (orig-fn &rest args)
+  :around #'evil-switch-to-windows-last-buffer
+  (let* ((visible (mapcar #'window-buffer
+                          (cl-remove-if (lambda (w) (eq w (selected-window)))
+                                        (window-list))))
+         (prev (cl-find-if (lambda (entry)
+                              (not (memq (car entry) visible)))
+                            (window-prev-buffers))))
+    (if prev
+        (switch-to-buffer (car prev))
+      (apply orig-fn args))))
+
+(defun cmg/exchange-main-buffers ()
+  "Swap buffers between the two main (non-sidebar, non-treemacs) windows."
+  (interactive)
+  (let* ((main-wins (cl-remove-if
+                     (lambda (w)
+                       (or (window-parameter w 'side-drawer)
+                           (and (fboundp 'treemacs-get-local-window)
+                                (eq w (treemacs-get-local-window)))
+                           (minibufferp (window-buffer w))))
+                     (window-list)))
+         (other (cl-find-if (lambda (w) (not (eq w (selected-window)))) main-wins)))
+    (if other
+        (let ((buf-a (window-buffer (selected-window)))
+              (buf-b (window-buffer other)))
+          (set-window-buffer (selected-window) buf-b)
+          (set-window-buffer other buf-a))
+      (message "No other main window to exchange with"))))
+
 
 (defun cmg/kill-non-sidebar-buffers ()
   "Kill all buffers except sidebar buffers, the dashboard, and the current buffer."
