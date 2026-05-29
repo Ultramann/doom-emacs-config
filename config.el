@@ -512,8 +512,10 @@ Skips if the current workspace already has sidebar buffers."
                                           (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
                                     (window-list)))
                  (target-win (cond
-                              ;; Commit message: use selected window so it gets focus
-                              (is-commit (selected-window))
+                              ;; Commit message: use selected window if it's a main window
+                              (is-commit (if (window-parameter (selected-window) 'side-drawer)
+                                             (car non-sidebar-wins)
+                                           (selected-window)))
                               ;; Reuse existing magit window
                               (existing-win existing-win)
                               ;; Two+ main windows: use the other one
