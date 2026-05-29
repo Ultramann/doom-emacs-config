@@ -1922,6 +1922,21 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
             (setq tab-bar-show t)
             (setq tab-bar-format '(cmg/tab-bar-stats))
             (tab-bar-mode 1)
+            ;; Add vertical padding to tab-bar
+            (let ((bg (doom-color 'bg-alt)))
+              (dolist (face '(tab-bar tab-bar-tab tab-bar-tab-inactive))
+                (set-face-attribute face nil :box `(:line-width 4 :color ,bg))))
             (run-with-timer 1 1 #'cmg/update-tab-bar-stats)
-            (run-with-timer 0.5 60 #'cmg/update-next-event))
+            (run-with-timer 0.5 60 #'cmg/update-next-event)
+            ;; Visual cue when Emacs is unfocused: orange window dividers + tab-bar underline
+            (add-function :after after-focus-change-function
+                          (lambda ()
+                            (let ((color (if (frame-focus-state)
+                                            (doom-color 'base8)
+                                          (doom-color 'orange))))
+                              (set-face-foreground 'window-divider color)
+                              (set-face-foreground 'window-divider-first-pixel color)
+                              (set-face-foreground 'window-divider-last-pixel color)
+                              (set-face-attribute 'tab-bar nil
+                                                  :underline `(:color ,color :position -1))))))
           100)
