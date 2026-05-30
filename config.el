@@ -1413,25 +1413,45 @@ If only one main window exists, create a split in that direction first."
 ;; Clean up vterm copies — remove fake newlines from terminal wrapping
 
 (defun cmg/vterm-clean-kill-ring ()
-  "Strip vterm fake (soft-wrap) newlines from the latest kill-ring entry.
-Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
+  "Clean vterm copy artifacts from the latest kill-ring entry.
+Strips trailing whitespace, dedents by common indent, and joins
+lines that were split by terminal overflow (1-space indent after dedent)."
   (when kill-ring
     (let* ((text (car kill-ring))
-           (result (with-temp-buffer
-                     (insert text)
-                     (goto-char (point-min))
-                     (while (search-forward "\n" nil t)
-                       (when (get-text-property (1- (point)) 'vterm-line-wrap)
-                         (delete-char -1)))
-                     ;; Dedent by 2 if first line starts with 2 spaces
-                     (goto-char (point-min))
-                     (when (looking-at "  ")
-                       (while (not (eobp))
-                         (when (looking-at "  ")
-                           (delete-char 2))
-                         (forward-line 1)))
-                     (buffer-string))))
-      (setcar kill-ring result))))
+           (result
+            (with-temp-buffer
+              (insert text)
+              ;; Strip trailing whitespace
+              (goto-char (point-min))
+              (while (re-search-forward "[ \t]+$" nil t)
+                (replace-match ""))
+              ;; Dedent by common indent
+              (goto-char (point-min))
+              (let ((min-indent most-positive-fixnum))
+                (while (not (eobp))
+                  (unless (looking-at-p "^$")
+                    (setq min-indent (min min-indent (current-indentation))))
+                  (forward-line 1))
+                (when (and (> min-indent 0) (< min-indent most-positive-fixnum))
+                  (goto-char (point-min))
+                  (while (not (eobp))
+                    (unless (looking-at-p "^$")
+                      (delete-char (min min-indent (current-indentation))))
+                    (forward-line 1))))
+              ;; Join 1-space-indented lines with previous line.
+              ;; After dedent, terminal-overflow wraps leave exactly 1 space
+              ;; of indent (original space from the text).
+              (goto-char (point-min))
+              (while (not (eobp))
+                (if (and (= (current-indentation) 1)
+                         (not (looking-at-p "^$"))
+                         (not (bobp)))
+                    (delete-region (1- (point)) (point))
+                  (forward-line 1)))
+              (buffer-string))))
+      (setcar kill-ring result)
+      (when interprogram-cut-function
+        (funcall interprogram-cut-function result)))))
 
 ;; Also clean up on Cmd-c in vterm
 (after! vterm
@@ -1439,8 +1459,9 @@ Real newlines are preserved. If every line starts with 2+ spaces, dedent by 2."
   (remove-hook 'vterm-mode-hook #'mode-line-invisible-mode)
   (define-key vterm-mode-map (kbd "s-c")
               (lambda () (interactive)
-                (call-interactively #'kill-ring-save)
-                (cmg/vterm-clean-kill-ring)))
+                (when (use-region-p)
+                  (kill-new (buffer-substring (region-beginning) (region-end)))
+                  (cmg/vterm-clean-kill-ring))))
   (define-key vterm-copy-mode-map (kbd "y")
               (lambda () (interactive)
                 (call-interactively #'evil-yank)
