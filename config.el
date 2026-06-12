@@ -16,6 +16,16 @@
 (global-visual-line-mode 1)
 (setq max-mini-window-height 1)
 (setq eldoc-echo-area-use-multiline-p 1)
+(setq projectile-auto-discover nil)
+(setq projectile-enable-caching nil)
+(defadvice! cmg/projectile-ensure-marker-a (orig-fn &rest args)
+  "Create a .projectile file if the directory has no project marker."
+  :around #'projectile-add-known-project
+  (let ((dir (expand-file-name (car args))))
+    (unless (cl-some (lambda (f) (file-exists-p (expand-file-name f dir)))
+                     '(".git" ".hg" ".svn" ".projectile" "Makefile" "package.json"))
+      (write-region "" nil (expand-file-name ".projectile" dir) nil 'silent))
+    (apply orig-fn args)))
 
 (defvar cmg/sidebar-width 90
   "The default width for all sidebar windows (Terminals, Claude, etc).")
@@ -35,7 +45,8 @@
 (defun cmg/set-sidebar-window-params (win)
   "Set window parameters on WIN to protect it like treemacs."
   (set-window-parameter win 'side-drawer t)
-  (set-window-parameter win 'no-delete-other-windows t))
+  (set-window-parameter win 'no-delete-other-windows t)
+  (set-window-parameter win 'no-other-window t))
 
 (defun cmg/project-root ()
   "Return the current workspace's project root reliably.
@@ -117,9 +128,21 @@ PROJECT-DIR overrides the terminal's working directory."
 (add-hook 'fundamental-mode-hook #'display-line-numbers-mode)
 (add-hook 'fundamental-mode-hook #'hl-line-mode)
 
-;; Disable hl-line in visual mode (selection highlight is enough)
-(add-hook 'evil-visual-state-entry-hook (lambda () (hl-line-mode -1)))
-(add-hook 'evil-visual-state-exit-hook (lambda () (hl-line-mode 1)))
+;; Disable hl-line and code block backgrounds in visual mode (selection highlight is enough)
+(defvar-local cmg/block-face-remap-cookies nil)
+(add-hook 'evil-visual-state-entry-hook
+          (lambda ()
+            (hl-line-mode -1)
+            (dolist (face '(org-block markdown-code-face))
+              (when (facep face)
+                (push (face-remap-add-relative face :background 'unspecified)
+                      cmg/block-face-remap-cookies)))))
+(add-hook 'evil-visual-state-exit-hook
+          (lambda ()
+            (hl-line-mode 1)
+            (dolist (cookie cmg/block-face-remap-cookies)
+              (face-remap-remove-relative cookie))
+            (setq-local cmg/block-face-remap-cookies nil)))
 
 ;; Lock sidebar width on frame resize
 (defun cmg/enforce-sidebar-width (&rest _)
@@ -270,12 +293,11 @@ Skips if the current workspace already has sidebar buffers."
 
 (after! persp-mode
   (setq +workspaces-switch-project-function #'cmg/project-layout)
-  ;; Undedicate sidebar windows before killing workspace to prevent errors
+  ;; Undedicate all windows before killing workspace to prevent errors
   (advice-add 'persp-kill :before
               (lambda (&rest _)
                 (dolist (win (window-list))
-                  (when (window-parameter win 'side-drawer)
-                    (set-window-dedicated-p win nil)))))
+                  (set-window-dedicated-p win nil))))
   ;; Save last workspace project on quit, restore on startup
   (setq persp-auto-save-opt 0          ; don't auto-save full workspace state
         persp-auto-resume-time -1)     ; don't auto-restore
@@ -509,6 +531,7 @@ Skips if the current workspace already has sidebar buffers."
                  (non-sidebar-wins (cl-remove-if
                                     (lambda (w)
                                       (or (window-parameter w 'side-drawer)
+                                          (window-dedicated-p w)
                                           (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
                                     (window-list)))
                  (target-win (cond
@@ -516,8 +539,10 @@ Skips if the current workspace already has sidebar buffers."
                               (is-commit (if (window-parameter (selected-window) 'side-drawer)
                                              (car non-sidebar-wins)
                                            (selected-window)))
-                              ;; Reuse existing magit window
-                              (existing-win existing-win)
+                              ;; Reuse existing magit window (only if it's not a sidebar)
+                              ((and existing-win (not (window-parameter existing-win 'side-drawer))
+                                    (not (window-dedicated-p existing-win)))
+                               existing-win)
                               ;; Two+ main windows: use the other one
                               ((>= (length non-sidebar-wins) 2)
                                (cl-find-if (lambda (w) (not (eq w (selected-window))))
@@ -530,6 +555,19 @@ Skips if the current workspace already has sidebar buffers."
                                (lambda (w) (string-match-p "COMMIT_EDITMSG" (buffer-name (window-buffer w))))
                                (window-list))))
               (select-window (or commit-win target-win))))))
+
+  ;; When quitting magit, delete the split rather than showing a duplicate buffer
+  (setq magit-bury-buffer-function
+        (lambda (window)
+          (let ((buf (window-buffer window))
+                (non-sidebar-wins (cl-remove-if
+                                   (lambda (w)
+                                     (or (window-parameter w 'side-drawer)
+                                         (window-dedicated-p w)))
+                                   (window-list))))
+            (if (> (length non-sidebar-wins) 1)
+                (progn (delete-window window) (bury-buffer buf))
+              (quit-window nil window)))))
 
   ;; Refresh magit status when saving a buffer
   (add-hook 'after-save-hook #'magit-after-save-refresh-status)
@@ -630,8 +668,8 @@ Skips if the current workspace already has sidebar buffers."
                    `(:foreground ,(doom-color 'base5)))))
       (propertize (format " %s   " icon) 'face face)))
   (doom-modeline-def-modeline 'vterm
-    '(bar)
-    '(vterm-evil-state)))
+    '(bar vterm-evil-state)
+    '()))
 
 ;; Leader map
 (map! :leader
@@ -1023,6 +1061,274 @@ If only one main window exists, create a split in that direction first."
           nil))))
 
 ;; ——————————————————————————————————————————————————————————————————
+;; Notebooks
+;; ——————————————————————————————————————————————————————————————————
+
+(defun cmg/view-notebook ()
+  "Convert the current .ipynb file to markdown via pandoc and display it."
+  (let* ((file (buffer-file-name))
+         (buf-name (format "*notebook: %s*" (file-name-nondirectory file))))
+    (when (get-buffer buf-name) (kill-buffer buf-name))
+    (let ((buf (get-buffer-create buf-name)))
+      (with-current-buffer buf
+        (call-process "pandoc" nil t nil file "-t" "org")
+        (goto-char (point-min))
+        (while (search-forward "#+begin_src jupyter-python" nil t)
+          (replace-match "#+begin_src python" t t))
+        (goto-char (point-min))
+        (org-mode)
+        (visual-line-mode 1)
+        (read-only-mode 1)
+        (set-buffer-modified-p nil))
+      (switch-to-buffer buf)
+      (kill-buffer (find-buffer-visiting file)))))
+
+(add-to-list 'auto-mode-alist '("\\.ipynb\\'" . fundamental-mode))
+(add-hook 'find-file-hook
+          (lambda ()
+            (when (and buffer-file-name
+                       (string-match-p "\\.ipynb\\'" buffer-file-name))
+              (cmg/view-notebook))))
+
+;; ——————————————————————————————————————————————————————————————————
+;; SQL
+;; ——————————————————————————————————————————————————————————————————
+
+;; Load connections from gitignored file
+(load (expand-file-name "sql-connections.el" doom-user-dir) t t)
+
+;; Enable SQL in org-babel
+(after! org
+  (require 'ob-sql)
+  (setq org-table-convert-region-max-lines 10000)
+  (add-hook 'org-mode-hook (lambda () (visual-line-mode -1) (setq truncate-lines t)))
+  (add-hook 'org-babel-after-execute-hook
+            (lambda ()
+              ;; Store full data then truncate for display
+              (save-excursion
+                (when (re-search-forward "#\\+RESULTS:" nil t)
+                  (forward-line 1)
+                  (when (org-at-table-p)
+                    (let* ((tbl (org-table-to-lisp))
+                           (truncated nil))
+                      ;; Store full table for inspector
+                      (setq-local cmg/sql-last-result
+                                  (mapcar (lambda (row)
+                                            (if (listp row)
+                                                (mapcar #'copy-sequence row)
+                                              row))
+                                          tbl))
+                      ;; Truncate for display
+                      (dolist (row tbl)
+                        (when (listp row)
+                          (dotimes (i (length row))
+                            (let ((cell (nth i row)))
+                              (when (and (stringp cell)
+                                         (> (length cell) cmg/sql-max-column-width))
+                                (setf (nth i row)
+                                      (concat (substring cell 0 cmg/sql-max-column-width) "..."))
+                                (setq truncated t))))))
+                      (when truncated
+                        (delete-region (org-table-begin) (org-table-end))
+                        (insert (orgtbl-to-orgtbl tbl nil) "\n"))))))
+              (when (buffer-modified-p) (save-buffer)))))
+
+;; Sanitize SQL output: join broken lines and escape pipes in data
+(defvar cmg/sql-sanitize-output nil)
+
+(defadvice! cmg/ob-sql-enable-sanitize-a (orig-fn body params)
+  "Enable output sanitization during SQL execution."
+  :around #'org-babel-execute:sql
+  (let ((cmg/sql-sanitize-output t))
+    (funcall orig-fn body params)))
+
+(defadvice! cmg/org-table-import-sanitize-a (orig-fn file separator)
+  "Fix newlines within data and escape pipe characters before importing."
+  :around #'org-table-import
+  (if (not cmg/sql-sanitize-output)
+      (funcall orig-fn file separator)
+    (let ((clean-file (make-temp-file "sql-clean-")))
+      (with-temp-buffer
+        (insert-file-contents file)
+        ;; Replace pipes in one pass on entire buffer
+        (goto-char (point-min))
+        (while (search-forward "|" nil t)
+          (replace-match "¦" t t))
+        ;; Process lines
+        (let* ((header (buffer-substring-no-properties
+                        (point-min) (progn (goto-char (point-min)) (line-end-position))))
+               (n (cl-count ?\t header))
+               (threshold (max 1 (- n 3)))
+               (lines (split-string (buffer-string) "\n" t))
+               (result nil)
+               (current nil))
+          (push (pop lines) result)
+          (when (equal (car lines) "-")
+            (push (pop lines) result))
+          ;; Join continuation lines — short-circuit tab counting
+          (dolist (line lines)
+            (let ((tabs 0) (i 0) (len (length line)))
+              (while (and (< tabs threshold) (< i len))
+                (when (= (aref line i) ?\t) (cl-incf tabs))
+                (cl-incf i))
+              (if (>= tabs threshold)
+                  (progn
+                    (when current (push current result))
+                    (setq current line))
+                (setq current (if current (concat current " " line) line)))))
+          (when current (push current result))
+          (erase-buffer)
+          (insert (mapconcat #'identity (nreverse result) "\n") "\n"))
+        (write-region nil nil clean-file nil 'silent))
+      (funcall orig-fn clean-file separator)
+      (delete-file clean-file))))
+
+;; Connection picker — select :dbconnection from minibuffer
+(defun cmg/sql-set-connection ()
+  "Set the :dbconnection for the current src block or file-level property."
+  (interactive)
+  (let* ((names (mapcar (lambda (c) (symbol-name (car c)))
+                        sql-connection-alist))
+         (choice (completing-read "Connection: " names nil t)))
+    (save-excursion
+      (if (org-in-src-block-p)
+          ;; Inside a src block — update block header
+          (progn
+            (org-babel-goto-src-block-head)
+            (let ((case-fold-search t))
+              (if (re-search-forward ":dbconnection \\S-+" (line-end-position) t)
+                  (replace-match (concat ":dbconnection " choice))
+                (end-of-line)
+                (insert " :dbconnection " choice))))
+        ;; Outside a src block — update file-level property
+        (goto-char (point-min))
+        (if (re-search-forward "^#\\+PROPERTY:.*header-args:sql.*\\(:dbconnection \\S-+\\)" nil t)
+            (replace-match (concat ":dbconnection " choice) nil nil nil 1)
+          ;; Check if header-args:sql property exists but without :dbconnection
+          (goto-char (point-min))
+          (if (re-search-forward "^\\(#\\+PROPERTY:.*header-args:sql.*\\)$" nil t)
+              (replace-match (concat (match-string 1) " :dbconnection " choice) nil nil)
+            ;; No existing property — insert one
+            (goto-char (point-min))
+            (if (re-search-forward "^#\\+PROPERTY:" nil t)
+                (progn (end-of-line) (insert "\n"))
+              (when (re-search-forward "^#\\+TITLE:" nil t)
+                (end-of-line)
+                (insert "\n")))
+            (insert "#+PROPERTY: header-args:sql :engine postgresql :dbconnection " choice)))))))
+
+(defvar cmg/sql-max-column-width 40
+  "Max display width for columns in SQL result tables.")
+
+(defvar cmg/sql-default-limit 20
+  "Default row limit for SQL queries. Set to nil to disable.")
+
+(defun cmg/sql-query-has-limit-p (sql)
+  "Return non-nil if SQL already contains a LIMIT clause."
+  (string-match-p "\\bLIMIT\\b" (upcase sql)))
+
+(defadvice! cmg/ob-sql-auto-limit-a (orig-fn body params)
+  "Auto-append LIMIT to SQL queries that don't have one."
+  :around #'org-babel-execute:sql
+  (let ((body (if (and cmg/sql-default-limit
+                       (not (cmg/sql-query-has-limit-p body)))
+                  (concat (string-trim-right body "[; \t\n]+") "\nLIMIT " (number-to-string cmg/sql-default-limit) ";")
+                body)))
+    (funcall orig-fn body params)))
+
+(defun cmg/sql-show-all ()
+  "Re-execute the current SQL block without the auto-limit."
+  (interactive)
+  (let ((cmg/sql-default-limit nil))
+    (org-babel-execute-src-block)))
+
+(defvar-local cmg/sql-last-result nil
+  "Full untruncated table data from the last SQL execution.")
+
+(defun cmg/sql-inspect-row ()
+  "Display the current org table row vertically in a side buffer."
+  (interactive)
+  (unless (org-at-table-p) (user-error "Not in a table"))
+  (when (org-at-table-hline-p) (user-error "On a separator line"))
+  (let* ((row-num (org-table-current-line))
+         (headers (and cmg/sql-last-result
+                       (car (cl-remove-if-not #'listp cmg/sql-last-result))))
+         (data-rows (and cmg/sql-last-result
+                         (cdr (cl-remove-if-not #'listp cmg/sql-last-result))))
+         (full-row (and data-rows (nth (1- row-num) data-rows)))
+         (values (or full-row
+                     ;; Fallback: parse from table directly
+                     (let ((line (buffer-substring-no-properties
+                                  (line-beginning-position) (line-end-position))))
+                       (when (string-match "^|\\(.*\\)|$" line)
+                         (mapcar #'string-trim (split-string (match-string 1 line) "|"))))))
+         (headers (or headers
+                      (save-excursion
+                        (goto-char (org-table-begin))
+                        (let ((line (buffer-substring-no-properties
+                                     (line-beginning-position) (line-end-position))))
+                          (when (string-match "^|\\(.*\\)|$" line)
+                            (mapcar #'string-trim (split-string (match-string 1 line) "|")))))))
+         (buf (get-buffer-create "*SQL Row*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (cl-loop for h in headers
+                 for v in values
+                 do (insert "* " h "\n" (or v "") "\n\n"))
+        (org-mode)
+        (visual-line-mode 1)
+        (goto-char (point-min))
+        (org-overview)
+        (evil-local-set-key 'normal (kbd "q") #'quit-window)
+        (read-only-mode 1)))
+    (pop-to-buffer buf)))
+
+(defun cmg/sql-insert-block ()
+  "Insert a sql src block with SELECT and place cursor after it."
+  (interactive)
+  (end-of-line)
+  (insert "\n#+begin_src sql\nSELECT \n#+end_src")
+  (forward-line -1)
+  (end-of-line))
+
+(after! org
+  ;; Unbind the old subtree prefix so we can reclaim "s" for SQL
+  (map! :map org-mode-map
+        :localleader
+        "s" nil)
+  (map! :map org-mode-map
+        :localleader
+        ;; Move tree/subtree from s to S
+        (:prefix ("S" . "tree/subtree")
+         "a" #'org-toggle-archive-tag
+         "b" #'org-tree-to-indirect-buffer
+         "c" #'org-clone-subtree-with-time-shift
+         "d" #'org-cut-subtree
+         "h" #'org-promote-subtree
+         "j" #'org-move-subtree-down
+         "k" #'org-move-subtree-up
+         "l" #'org-demote-subtree
+         "n" #'org-narrow-to-subtree
+         "r" #'org-refile
+         "s" #'org-sparse-tree
+         "A" #'org-archive-subtree-default
+         "N" #'widen
+         "S" #'org-sort)
+        ;; SQL menu
+        (:prefix ("s" . "sql")
+         "c" #'cmg/sql-set-connection
+         "i" #'cmg/sql-insert-block
+         "a" #'cmg/sql-show-all
+         "r" #'cmg/sql-inspect-row))
+  (evil-define-key* '(normal insert) org-mode-map
+    (kbd "S-<return>") (lambda () (interactive)
+                         (if (and (org-in-src-block-p)
+                                  (string= "sql" (org-element-property :language (org-element-at-point))))
+                             (org-babel-execute-src-block)
+                           (org-return)))))
+
+;; ——————————————————————————————————————————————————————————————————
 ;; Claude
 ;; ——————————————————————————————————————————————————————————————————
 
@@ -1085,8 +1391,11 @@ If only one main window exists, create a split in that direction first."
               (list file start-line (+ start-line (max 0 (1- selected-lines)))))))))))
 
 (defun cmg/claude-send-region (beg end)
-  "Send a file reference (@filepath:lines) for the selected region to Claude and switch to it."
-  (interactive "r")
+  "Send a file reference (@filepath:lines) for the selected region or current line to Claude."
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (line-beginning-position) (line-end-position))))
   (let* ((in-diff (derived-mode-p 'magit-diff-mode 'diff-mode 'magit-status-mode))
          (diff-info (when in-diff (cmg/diff-file-and-lines beg end)))
          (project-root (or (projectile-project-root) default-directory))
@@ -1095,7 +1404,10 @@ If only one main window exists, create a split in that direction first."
                     ((buffer-file-name) (file-relative-name (buffer-file-name) project-root))
                     (t (buffer-name))))
          (start-line (if diff-info (nth 1 diff-info) (line-number-at-pos beg)))
-         (end-line (if diff-info (nth 2 diff-info) (line-number-at-pos end)))
+         (end-line (if diff-info (nth 2 diff-info)
+                    (save-excursion
+                      (goto-char end)
+                      (if (bolp) (1- (line-number-at-pos)) (line-number-at-pos)))))
          (ref (if (= start-line end-line)
                   (format "@%s:%d" rel-file start-line)
                 (format "@%s:%d-%d" rel-file start-line end-line)))
@@ -1375,7 +1687,11 @@ If only one main window exists, create a split in that direction first."
                       (if (file-name-absolute-p file) file
                         (expand-file-name file project-root)))))
     (if (and full-path (file-exists-p full-path))
-        (let ((win (cl-find-if (lambda (w) (not (window-parameter w 'side-drawer)))
+        (let ((win (cl-find-if (lambda (w)
+                                 (and (not (window-parameter w 'side-drawer))
+                                      (not (window-dedicated-p w))
+                                      (not (and (fboundp 'treemacs-get-local-buffer)
+                                                (eq (window-buffer w) (treemacs-get-local-buffer))))))
                                (window-list))))
           (when win
             (select-window win)
@@ -1682,7 +1998,10 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 (defun cmg/vterm-find-file (file)
   "Open FILE in the main (non-sidebar) window."
   (let ((win (cl-find-if (lambda (w)
-                           (not (window-parameter w 'side-drawer)))
+                           (and (not (window-parameter w 'side-drawer))
+                                (not (window-dedicated-p w))
+                                (not (and (fboundp 'treemacs-get-local-buffer)
+                                          (eq (window-buffer w) (treemacs-get-local-buffer))))))
                          (window-list))))
     (when win (select-window win))
     (find-file file)))
@@ -1918,17 +2237,14 @@ lines that were split by terminal overflow (1-space indent after dedent)."
                                          (lambda (b) (file-name-nondirectory (buffer-file-name b)))
                                          unsaved-bufs ", "))
                                  (label (concat "  " (propertize (format " %d " unsaved)
-                                                                  'face (list :foreground (doom-color 'yellow)
-                                                                              :box (list :line-width -1 :color (doom-color 'yellow)))
+                                                                  'face (list :foreground (doom-color 'yellow))
 ))))
                             (list (list 'unsaved 'menu-item label 'ignore
                                       :help (format "Unsaved buffers: %s" names)))))))
   `((pad menu-item ,(propertize " " 'face `(:box (:line-width (2 . 2) :color ,(doom-color 'bg-alt)))) ignore)
     ,@unsaved-item
     (branch menu-item ,cmg/tab-bar-branch-cache ignore)
-    (cal-spacer menu-item
-                ,(propertize " " 'display `(space :align-to ,(+ 2 (or (bound-and-true-p treemacs-width) 30))))
-                ignore)
+    (cal-spacer menu-item "   " ignore)
     (event menu-item
            ,(if (string-empty-p cmg/next-event-cache) ""
               cmg/next-event-cache)

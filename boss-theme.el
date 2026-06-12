@@ -96,12 +96,12 @@
    (which-key-group-description-face :foreground dark-blue)
    (which-key-special-key-face :foreground fg)
    ;; Marginalia (vertico file annotations)
-   (marginalia-size :foreground bright-blue)
+   (marginalia-size :foreground green)
    (marginalia-date :foreground fg)
-   (marginalia-file-priv-dir :foreground fg)
-   (marginalia-file-priv-read :foreground orange)
-   (marginalia-file-priv-write :foreground blue)
-   (marginalia-file-priv-exec :foreground magenta)
+   (marginalia-file-priv-dir :foreground blue)
+   (marginalia-file-priv-read :foreground magenta)
+   (marginalia-file-priv-write :foreground orange)
+   (marginalia-file-priv-exec :foreground yellow)
    ;; Magit / Diff
    (magit-diff-added :foreground green :background base1)
    (magit-diff-added-highlight :foreground green :background base2)
@@ -141,6 +141,8 @@
    ;; Vertico (completion)
    (vertico-current :background base3)
    (corfu-current :background base3)
+   ;; Org mode
+   (org-table :foreground fg)
    ;; Fill column indicator
    (fill-column-indicator :foreground base4)
    ;; Markdown
@@ -155,6 +157,14 @@
    (git-commit-comment-action :foreground orange)
    (git-commit-comment-file :foreground fg)
    (git-commit-comment-heading :foreground base7)
+   ;; Dired (diredfl)
+   (diredfl-dir-priv :foreground blue)
+   (diredfl-read-priv :foreground magenta)
+   (diredfl-write-priv :foreground orange)
+   (diredfl-exec-priv :foreground yellow)
+   (diredfl-no-priv :foreground base5)
+   (diredfl-number :foreground green)
+   (dired-perm-write :foreground orange)
    ;; Nerd icons
    (nerd-icons-purple :foreground bright-blue)
    (nerd-icons-purple-alt :foreground bright-blue)

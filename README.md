@@ -74,7 +74,41 @@ Eglot is the LSP client, enabled via `(lsp +eglot)` in init.el. Key configuratio
 
 ---
 
-## 6. Google Calendar (Top Bar)
+## 6. SQL Workflow
+
+Queries live in `.org` files as `#+begin_src sql` blocks. `S-RET` executes the block under cursor and drops results inline. Buffer auto-saves after execution.
+
+### Prerequisites
+
+Install the Postgres client tools: `brew install libpq`
+
+### Connections
+
+Database connections are defined in `sql-connections.el` (gitignored). Copy the template and fill in real values. Each org file needs `:engine postgresql` in its header args.
+
+### Keybindings
+
+* `SPC m s c` — pick a connection from the minibuffer (sets `:dbconnection` on current block, or file-level `#+PROPERTY` if outside a block)
+* `SPC m s i` — insert a new SQL block with `SELECT`
+* `S-RET` — execute the SQL block under cursor (only in SQL blocks)
+* `SPC m S` — tree/subtree operations (moved from `s`)
+
+### Authentication
+
+All credentials go in `~/.pgpass` (`chmod 600`). `psql` reads it automatically. Format: `hostname:port:database:username:password`
+
+```
+# password-based
+127.0.0.1:5432:mydb:admin:s3cret
+# IAM via Cloud SQL Auth Proxy (empty password)
+127.0.0.1:5437:mydb:you@company.com:
+# wildcard — same password for all databases on a host
+127.0.0.1:*:*:admin:s3cret
+```
+
+---
+
+## 7. Google Calendar (Top Bar)
 
 The top bar displays the next calendar event via `read-cal.scpt`, which queries the macOS Calendar app (Google Calendar "Cary" account). Ensure:
 
@@ -83,7 +117,7 @@ The top bar displays the next calendar event via `read-cal.scpt`, which queries 
 
 ---
 
-## 7. Configuring Modules
+## 8. Configuring Modules
 
 In `~/.config/doom/init.el`, key enabled modules:
 * `:term vterm` — high-performance terminal
@@ -96,6 +130,6 @@ In `~/.config/doom/init.el`, key enabled modules:
 
 ---
 
-## 8. Interactive Updates
+## 9. Interactive Updates
 
 If there's new code you want to test in your config.el file, you can select it (highlight/visual mode — try `v a )` to select the sexp) and type `g r`.
