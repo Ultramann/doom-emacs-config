@@ -13,7 +13,9 @@
       doom-font-increment 1)
 (setq default-directory "~/.config/doom/")
 (setq org-directory "~/org/")
+(setq org-hide-emphasis-markers t)
 (global-visual-line-mode 1)
+(setq line-move-visual nil)
 (setq max-mini-window-height 1)
 (setq eldoc-echo-area-use-multiline-p 1)
 (setq projectile-auto-discover nil)
@@ -47,6 +49,18 @@
   (set-window-parameter win 'side-drawer t)
   (set-window-parameter win 'no-delete-other-windows t)
   (set-window-parameter win 'no-other-window t))
+
+(defun cmg/get-or-create-sidebar-window ()
+  "Return the sidebar window, creating one if none exists.
+Undedicates the window so a new buffer can be displayed in it."
+  (let ((win (cl-find-if (lambda (w) (window-parameter w 'side-drawer))
+                         (window-list))))
+    (if (and win (window-live-p win))
+        (set-window-dedicated-p win nil)
+      (setq win (split-window (frame-root-window) (- cmg/sidebar-width) 'right))
+      (cmg/set-sidebar-window-params win))
+    (select-window win)
+    win))
 
 (defun cmg/project-root ()
   "Return the current workspace's project root reliably.
@@ -99,13 +113,11 @@ falling back to doom-project-root and default-directory."
 ;; Must be defined before doom-after-init-hook (startup) because
 ;; the hook fires while config.el is still loading via Doom's init sequence.
 (defun cmg/create-sidebar-terminal (&optional project-dir)
-  "Create a new terminal buffer in a fresh sidebar split.
+  "Create a new terminal buffer in the sidebar.
 PROJECT-DIR overrides the terminal's working directory."
   (let* ((ws (cmg/workspace-name))
          (buf (generate-new-buffer (format "%s:Term:new" ws)))
-         (win (split-window (frame-root-window) (- cmg/sidebar-width) 'right)))
-    (cmg/set-sidebar-window-params win)
-    (select-window win)
+         (win (cmg/get-or-create-sidebar-window)))
     (switch-to-buffer buf)
     (set-window-fringes win 15 0)
     (with-current-buffer buf
@@ -133,10 +145,11 @@ PROJECT-DIR overrides the terminal's working directory."
 (add-hook 'evil-visual-state-entry-hook
           (lambda ()
             (hl-line-mode -1)
-            (dolist (face '(org-block markdown-code-face))
-              (when (facep face)
-                (push (face-remap-add-relative face :background 'unspecified)
-                      cmg/block-face-remap-cookies)))))
+            (let ((bg (doom-color 'bg)))
+              (dolist (face '(org-block org-block-begin-line org-block-end-line markdown-code-face))
+                (when (facep face)
+                  (push (face-remap-add-relative face :background bg)
+                        cmg/block-face-remap-cookies))))))
 (add-hook 'evil-visual-state-exit-hook
           (lambda ()
             (hl-line-mode 1)
@@ -168,18 +181,19 @@ PROJECT-DIR overrides the terminal's working directory."
 (defadvice! +open-in-other-window-a (fn file &rest args)
   :around #'find-file
   (if cmg/open-in-other-window
-      (let ((cmg/open-in-other-window nil)
-            (non-sidebar-wins (cl-remove-if
-                               (lambda (w)
-                                 (or (window-parameter w 'side-drawer)
-                                     (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
-                               (window-list))))
-        (let* ((other-win (cl-find-if (lambda (w) (not (eq w (selected-window))))
-                                      non-sidebar-wins))
-               (target (or other-win
-                           (split-window (car non-sidebar-wins) nil 'right))))
-          (select-window target)
-          (apply fn file args)))
+      (let* ((_ (setq cmg/open-in-other-window nil))
+             (origin (or (minibuffer-selected-window) (selected-window)))
+             (non-sidebar-wins (cl-remove-if
+                                (lambda (w)
+                                  (or (window-parameter w 'side-drawer)
+                                      (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
+                                (window-list)))
+             (other-win (cl-find-if (lambda (w) (not (eq w origin)))
+                                    non-sidebar-wins))
+             (target (or other-win
+                         (split-window origin nil 'right))))
+        (select-window target)
+        (apply fn file args))
     (apply fn file args)))
 
 ;; ——————————————————————————————————————————————————————————————————
@@ -559,18 +573,15 @@ Skips if the current workspace already has sidebar buffers."
   ;; When quitting magit, delete the split rather than showing a duplicate buffer
   (setq magit-bury-buffer-function
         (lambda (window)
-          (let ((buf (window-buffer window))
-                (non-sidebar-wins (cl-remove-if
-                                   (lambda (w)
-                                     (or (window-parameter w 'side-drawer)
-                                         (window-dedicated-p w)))
-                                   (window-list))))
-            (if (> (length non-sidebar-wins) 1)
-                (progn (delete-window window) (bury-buffer buf))
-              (quit-window nil window)))))
+          (quit-window nil window)))
 
-  ;; Refresh magit status when saving a buffer
-  (add-hook 'after-save-hook #'magit-after-save-refresh-status)
+  ;; Refresh magit status when saving a buffer (skip when many changes to avoid lag)
+  (add-hook 'after-save-hook
+            (lambda ()
+              (when-let ((buf (magit-get-mode-buffer 'magit-status-mode)))
+                (with-current-buffer buf
+                  (when (< (length (magit-unstaged-files)) 50)
+                    (magit-refresh))))))
   ;; Always expand these sections in magit status
   (setq magit-section-initial-visibility-alist
         '((unstaged . show)
@@ -585,12 +596,11 @@ Skips if the current workspace already has sidebar buffers."
               (setq-local display-fill-column-indicator-column (1+ git-commit-summary-max-length))
               (display-fill-column-indicator-mode 1)
 ))
-  ;; Save all buffers and fetch when entering magit status
-  (add-hook 'doom-switch-buffer-hook
+  ;; Save all buffers and fetch when opening magit status (not on background refreshes)
+  (add-hook 'magit-status-mode-hook
             (lambda ()
-              (when (derived-mode-p 'magit-status-mode)
-                (save-some-buffers t)
-                (magit-fetch-all-prune))))
+              (save-some-buffers t)
+              (magit-fetch-all-prune)))
   ;; Toggle parent file section from anywhere in a diff
   (evil-define-key* 'normal magit-diff-mode-map
     (kbd "<backtab>") (lambda () (interactive)
@@ -749,7 +759,7 @@ Skips if the current workspace already has sidebar buffers."
       :desc "Log buffers"              "b L" #'cmg/switch-to-log-buffer
       :desc "Kill all buffers"         "b K" #'cmg/kill-non-sidebar-buffers
       :desc "Clone buffer"             "b c" (cmd! (switch-to-buffer-other-window (current-buffer)))
-      :desc "Cone split buffer here"   "b C" (cmd!
+      :desc "Clone split buffer here"  "b C" (cmd!
                                               (let* ((other (cl-find-if
                                                              (lambda (w)
                                                                (and (not (eq w (selected-window)))
@@ -1075,6 +1085,10 @@ If only one main window exists, create a split in that direction first."
         (goto-char (point-min))
         (while (search-forward "#+begin_src jupyter-python" nil t)
           (replace-match "#+begin_src python" t t))
+        ;; Promote subheadings to top-level (same as title)
+        (goto-char (point-min))
+        (while (re-search-forward "^\\*\\*" nil t)
+          (replace-match "*" t t))
         (goto-char (point-min))
         (org-mode)
         (visual-line-mode 1)
@@ -1342,21 +1356,14 @@ If only one main window exists, create a split in that direction first."
     (with-current-buffer buf
       (setq default-directory (cmg/project-root)))
     ;; Display in sidebar first so vterm gets correct dimensions
-    (let ((win (or (cl-find-if (lambda (w) (window-parameter w 'side-drawer)) (window-list))
-                   (cl-find-if (lambda (w) (cmg/sidebar-buffer-p (window-buffer w))) (window-list)))))
-      (if (and win (window-live-p win))
-          (select-window win)
-        (setq win (split-window (frame-root-window) (- width) 'right))
-        (cmg/set-sidebar-window-params win))
-      (select-window win)
-      (set-window-dedicated-p win nil)
+    (let ((win (cmg/get-or-create-sidebar-window)))
       (switch-to-buffer buf))
     ;; Set fringes before vterm-mode so it reads correct dimensions
     (set-window-fringes (selected-window) 15 0)
     ;; Init vterm with claude as the shell so it launches directly and
     ;; exiting claude kills the process/buffer
     (when needs-init
-      (let ((vterm-shell "claude"))
+      (let ((vterm-shell "bash -lc 'source ~/.bashrc; exec claude'"))
         (vterm-mode)))
     (when (bound-and-true-p persp-mode)
       (persp-add-buffer buf))
@@ -1490,11 +1497,9 @@ If only one main window exists, create a split in that direction first."
 ;; Force sidebar buffers to only display in sidebar windows
 (defun cmg/display-in-sidebar (buf alist)
   "Display BUF in the sidebar window, never in the main area."
-  (let ((win (cl-find-if (lambda (w) (window-parameter w 'side-drawer))
-                         (window-list))))
-    (when win
-      (window--display-buffer buf win 'reuse alist)
-      win)))
+  (let ((win (cmg/get-or-create-sidebar-window)))
+    (window--display-buffer buf win 'reuse alist)
+    win))
 (add-to-list 'display-buffer-alist
              '((lambda (buf _action)
                  (cmg/sidebar-buffer-p (if (stringp buf) (get-buffer buf) buf)))
@@ -1531,12 +1536,7 @@ If only one main window exists, create a split in that direction first."
 (after! deadgrep
   (setq deadgrep-display-buffer-function
         (lambda (buf)
-          (let ((win (or (cl-find-if (lambda (w) (window-parameter w 'side-drawer))
-                                     (window-list))
-                         (split-window (frame-root-window) (- cmg/sidebar-width) 'right))))
-            (cmg/set-sidebar-window-params win)
-            (set-window-dedicated-p win nil)
-            (select-window win)
+          (let ((win (cmg/get-or-create-sidebar-window)))
             (switch-to-buffer buf)
             (set-window-dedicated-p win t))))
 
@@ -1644,10 +1644,7 @@ If only one main window exists, create a split in that direction first."
         (delete-window sidebar-window)
       (let ((existing-term (car (cmg/workspace-sidebar-buffers))))
         (if existing-term
-            (let* ((width cmg/sidebar-width)
-                   (win (split-window (frame-root-window) (- width) 'right)))
-              (cmg/set-sidebar-window-params win)
-              (select-window win)
+            (let ((win (cmg/get-or-create-sidebar-window)))
               (switch-to-buffer existing-term))
           (cmg/open-new-sidebar-terminal))))))
 
@@ -1975,6 +1972,21 @@ lines that were split by terminal overflow (1-space indent after dedent)."
               (setq-local evil-insert-state-cursor '(nil nil))
               (setq-local cursor-type nil))
 ))
+
+;; Start vterms with a clean environment — like a fresh terminal, not inheriting Emacs state
+(defadvice! cmg/vterm-clean-env-a (orig-fn &rest args)
+  "Start vterm with a minimal environment, letting .bashrc set everything up."
+  :around #'vterm-mode
+  (let ((process-environment
+         (list (format "HOME=%s" (getenv "HOME"))
+               (format "USER=%s" (getenv "USER"))
+               (format "SHELL=%s" (or (getenv "SHELL") "/bin/bash"))
+               (format "LANG=%s" (or (getenv "LANG") "en_US.UTF-8"))
+               "TERM=xterm-256color"
+               "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+               "INSIDE_EMACS=vterm"
+               (format "EMACS_VTERM_PATH=%s" (getenv "EMACS_VTERM_PATH")))))
+    (apply orig-fn args)))
 
 ;; Track which vterm buffer is focused for tab-line rendering
 ;; (selected-window is unreliable during redisplay — Emacs temporarily selects the drawn window)

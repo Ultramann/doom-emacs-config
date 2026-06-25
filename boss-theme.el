@@ -138,11 +138,17 @@
    (diff-removed :foreground red :background base1)
    (diff-refine-added :foreground green :background base2)
    (diff-refine-removed :foreground red :background base2)
+   ;; Merge conflicts (smerge)
+   (smerge-upper :background "#4d000d")
+   (smerge-lower :background "#1f3f26")
+   (smerge-markers :background bg :extend t)
    ;; Vertico (completion)
    (vertico-current :background base3)
    (corfu-current :background base3)
    ;; Org mode
    (org-table :foreground fg)
+   (org-verbatim :foreground base7 :background base1)
+   (org-code :foreground base7 :background base1)
    ;; Fill column indicator
    (fill-column-indicator :foreground base4)
    ;; Markdown
