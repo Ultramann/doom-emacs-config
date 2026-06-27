@@ -131,6 +131,18 @@ PROJECT-DIR overrides the terminal's working directory."
 ;; Windows
 ;; ——————————————————————————————————————————————————————————————————
 
+(defun cmg/consolidate-windows ()
+  "Close all other main windows, keeping the current one and sidebars."
+  (interactive)
+  (let ((keep (selected-window)))
+    (dolist (win (window-list))
+      (when (and (not (eq win keep))
+                 (not (window-parameter win 'side-drawer))
+                 (not (window-dedicated-p win))
+                 (not (and (fboundp 'treemacs-get-local-window)
+                           (eq win (treemacs-get-local-window)))))
+        (delete-window win)))))
+
 (setq display-line-numbers-width 2)
 (setq display-line-numbers-type 'relative)
 (setq auto-revert-interval 1)
@@ -561,8 +573,10 @@ Skips if the current workspace already has sidebar buffers."
                               ((>= (length non-sidebar-wins) 2)
                                (cl-find-if (lambda (w) (not (eq w (selected-window))))
                                            non-sidebar-wins))
-                              ;; One window: split
-                              (t (split-window (car non-sidebar-wins) nil 'right)))))
+                              ;; One window: split if wide enough, otherwise reuse
+                              ((>= (window-width (car non-sidebar-wins)) 160)
+                               (split-window (car non-sidebar-wins) nil 'right))
+                              (t (car non-sidebar-wins)))))
             (set-window-buffer target-win buffer)
             ;; After displaying diff, refocus commit message if visible
             (let ((commit-win (cl-find-if
@@ -701,7 +715,7 @@ Skips if the current workspace already has sidebar buffers."
       (:prefix "w"
        "0" nil "1" nil "2" nil "3" nil "4" nil
        "5" nil "6" nil "7" nil "8" nil "9" nil
-       "c" nil
+       :desc "Consolidate windows" "c" #'cmg/consolidate-windows
        "C-_" nil "C-b" nil "C-c" nil "C-d" nil "C-f" nil
        "C-h" nil "C-j" nil "C-k" nil "C-l" nil "C-n" nil
        "C-p" nil "C-q" nil "C-r" nil "C-s" nil "C-t" nil

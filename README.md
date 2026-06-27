@@ -2,20 +2,20 @@
 
 Before installing Emacs, ensure the system has the necessary tools and dependencies.
 
-* **Git** (for Doom)
-* **Ripgrep & FD** (for fast searching)
-* **CMake & Libtool** (required for `vterm` compilation)
-* **A Nerd Font** (for icons in tab-line, treemacs, modeline — e.g. `brew install --cask font-symbols-only-nerd-font`)
+```bash
+brew install ripgrep fd cmake libtool
+brew install --cask font-symbols-only-nerd-font
+```
 
 ---
 
 ## 2. Emacs Installation
 
-Install **Emacs 30+** via `emacs-plus` for native-comp, vterm, and tree-sitter support.
+Install **Emacs 30+** via `emacs-plus` (includes native-comp by default).
 
 ```bash
 brew tap d12frosted/emacs-plus
-brew install emacs-plus@30 --with-native-comp
+brew install emacs-plus@30
 ```
 
 ---
@@ -24,12 +24,13 @@ brew install emacs-plus@30 --with-native-comp
 
 Doom is a configuration framework that provides the `map!`, `def-doom-theme`, and module system.
 
-1. **Clone the Doom repo:**
-   `git clone --depth 1 https://github.com/doomemacs/doomemacs ~/.config/emacs`
-2. **Install Doom:**
-   `~/.config/emacs/bin/doom install`
-3. **Add Doom to your PATH:**
-   Add `~/.config/emacs/bin` to your `.zshrc` or `.bashrc`.
+```bash
+git clone --depth 1 https://github.com/doomemacs/doomemacs ~/.config/emacs
+git clone git@github.com:Ultramann/doom-emacs-config.git ~/.config/doom
+~/.config/emacs/bin/doom install
+```
+
+Add `~/.config/emacs/bin` to your `.bashrc`.
 
 ---
 
