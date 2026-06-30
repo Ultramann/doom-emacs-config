@@ -386,6 +386,16 @@ Skips if the current workspace already has sidebar buffers."
 
 (add-hook 'kill-emacs-hook #'cmg/save-last-project)
 
+;; Shrink the startup font so the 90-col sidebar stays <= half the frame.
+;; A fullscreen frame keeps its pixel size, so a smaller font adds columns.
+(defun cmg/fit-font-to-frame ()
+  "Shrink `doom-font' (floor size 10) until the sidebar terminal is <= half the frame."
+  (while (and (> (font-get doom-font :size) 10)
+              (< (frame-width) (* 2 cmg/sidebar-width)))
+    (font-put doom-font :size (- (font-get doom-font :size) doom-font-increment))
+    (set-frame-font doom-font t)
+    (redisplay t)))
+
 ;; Startup: restore workspace immediately, defer terminal until frame is sized
 (defvar cmg/startup-dir nil)
 (add-hook 'doom-after-init-hook
@@ -413,6 +423,7 @@ Skips if the current workspace already has sidebar buffers."
                   (defun cmg/startup-create-terminal (&optional _frame)
                     (when (and (not (cmg/workspace-sidebar-buffers))
                                (> (frame-width) (+ cmg/sidebar-width 40)))
+                      (cmg/fit-font-to-frame)
                       (cmg/create-sidebar-terminal cmg/startup-dir)
                       (windmove-left)
                       (remove-hook 'window-size-change-functions #'cmg/startup-create-terminal)))
