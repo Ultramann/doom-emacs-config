@@ -1119,6 +1119,63 @@ If only one main window exists, create a split in that direction first."
               (cmg/view-notebook))))
 
 ;; ——————————————————————————————————————————————————————————————————
+;; Markdown
+;; ——————————————————————————————————————————————————————————————————
+
+;; Doom enables `markdown-fontify-code-blocks-natively', which re-runs each
+;; fenced block's language major-mode through font-lock. In buffers with code
+;; blocks this recomputes whole blocks on every keystroke, spiking CPU.
+;;
+;; The native fontifier's output is a pure function of (language, block-text):
+;; it fontifies only the block substring in an isolated buffer and carries back
+;; only the `face' property. So we memoize on that content key and skip
+;; recomputation for fences whose text hasn't changed.
+(after! markdown-mode
+  (defvar +markdown-code-fontify-cache (make-hash-table :test 'equal :size 200)
+    "Memoizes native code-block fontification, keyed on (LANG-MODE . BLOCK-TEXT).
+Each value is a list of (REL-START REL-END FACE) runs relative to block start.")
+
+  (defun +markdown-fontify-code-block-natively (lang start end)
+    "Memoized replacement for `markdown-fontify-code-block-natively'.
+Re-runs the language major-mode only when the fence's text changes; otherwise
+reapplies cached faces. Output depends only on (LANG, text), so this is exact."
+    (let ((lang-mode (if lang (markdown-get-lang-mode lang)
+                       markdown-fontify-code-block-default-mode)))
+      (when (fboundp lang-mode)
+        (let* ((string (buffer-substring-no-properties start end))
+               (modified (buffer-modified-p))
+               (key (cons lang-mode string))
+               (runs (gethash key +markdown-code-fontify-cache 'miss)))
+          (remove-text-properties start end '(face nil))
+          (when (eq runs 'miss)
+            (setq runs nil)
+            (with-current-buffer
+                (get-buffer-create
+                 (format " *markdown-code-fontification:%s*" (symbol-name lang-mode)))
+              (let ((inhibit-modification-hooks nil))
+                (delete-region (point-min) (point-max))
+                (insert string " ")) ; trailing char forces a final property change
+              (unless (eq major-mode lang-mode) (funcall lang-mode))
+              (font-lock-ensure)
+              (let ((pos (point-min)) next)
+                (while (setq next (next-single-property-change pos 'face))
+                  (let ((val (get-text-property pos 'face)))
+                    (when val (push (list (1- pos) (1- next) val) runs)))
+                  (setq pos next))))
+            (setq runs (nreverse runs))
+            (when (> (hash-table-count +markdown-code-fontify-cache) 256)
+              (clrhash +markdown-code-fontify-cache)) ; bound memory
+            (puthash key runs +markdown-code-fontify-cache))
+          (pcase-dolist (`(,rs ,re ,face) runs)
+            (put-text-property (+ start rs) (+ start re) 'face face (current-buffer)))
+          (add-text-properties
+           start end '(font-lock-fontified t fontified t font-lock-multiline t))
+          (set-buffer-modified-p modified)))))
+
+  (advice-add 'markdown-fontify-code-block-natively
+              :override #'+markdown-fontify-code-block-natively))
+
+;; ——————————————————————————————————————————————————————————————————
 ;; SQL
 ;; ——————————————————————————————————————————————————————————————————
 
