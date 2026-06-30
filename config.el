@@ -143,6 +143,36 @@ PROJECT-DIR overrides the terminal's working directory."
                            (eq win (treemacs-get-local-window)))))
         (delete-window win)))))
 
+(defun cmg/vterm-here ()
+  "Open a vterm in the current window area, sized to sidebar width."
+  (interactive)
+  (let* ((main-wins (cl-remove-if
+                     (lambda (w)
+                       (or (window-parameter w 'side-drawer)
+                           (window-dedicated-p w)
+                           (and (fboundp 'treemacs-get-local-window)
+                                (eq w (treemacs-get-local-window)))))
+                     (window-list)))
+         (win (cond
+               ;; Two+ splits: use the rightmost main window
+               ((>= (length main-wins) 2)
+                (car (sort (copy-sequence main-wins)
+                           (lambda (a b) (> (window-left-column a) (window-left-column b))))))
+               ;; One window, wide enough: split and use right
+               ((>= (window-width (car main-wins)) 160)
+                (let ((right (split-window (car main-wins)
+                                          (- (window-width (car main-wins)) cmg/sidebar-width)
+                                          'right)))
+                  right))
+               ;; One window, narrow: use it
+               (t (car main-wins)))))
+    (select-window win)
+    ;; Resize to sidebar width if there are other main windows
+    (when (> (length (window-list)) 1)
+      (ignore-errors
+        (window-resize win (- cmg/sidebar-width (window-width win)) t)))
+    (+vterm/here)))
+
 (setq display-line-numbers-width 2)
 (setq display-line-numbers-type 'relative)
 (setq auto-revert-interval 1)
@@ -555,6 +585,14 @@ Skips if the current workspace already has sidebar buffers."
     (call-interactively #'+vc/browse-at-remote)))
 
 ;; Magit
+;; Disable evil-collection's magit key remapping — use vanilla magit bindings
+;; Restore vanilla magit branch menu keys (evil-collection remaps them)
+(defun cmg/fix-magit-branch-keys ()
+  (transient-suffix-put 'magit-branch 'magit-branch-reset :key "x")
+  (transient-suffix-put 'magit-branch 'magit-branch-delete :key "k")
+  (remove-hook 'magit-mode-hook #'cmg/fix-magit-branch-keys))
+(add-hook 'magit-mode-hook #'cmg/fix-magit-branch-keys)
+
 (after! magit
   ;; Open magit in a split — reuse existing magit window, or split
   (setq magit-display-buffer-function
@@ -784,6 +822,7 @@ Skips if the current workspace already has sidebar buffers."
 
       ;; Open
       :desc "Toggle Terminal Sidebar"  "o t" #'cmg/toggle-terminal-sidebar
+      :desc "Terminal here"            "o T" #'cmg/vterm-here
       :desc "Open URL at point"        "o b" #'browse-url-at-point
 
       ;; LLM
@@ -2035,36 +2074,28 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 
 (add-hook 'vterm-mode-hook
           (lambda ()
+            ;; Keybindings for all vterms (C-h, C-l, C-t, etc.)
             (cmg/sidebar-mode 1)
-            ;; Use :eval so it updates every time you switch buffers or create new ones
-            (setq tab-line-format '(:eval (cmg/get-terminal-tabs)))
-            ;; Thin spacer between tab-line and terminal content
-            (setq header-line-format " ")
-            (face-remap-add-relative 'header-line
-                                     :background (doom-color 'bg)
-                                     :box nil
-                                     :overline nil
-                                     :underline nil
-                                     :height 0.3)
-            (face-remap-add-relative 'tab-line :background (doom-color 'bg))
+            ;; Sidebar-only visual settings
+            (when (cmg/sidebar-buffer-p (current-buffer))
+              (setq tab-line-format '(:eval (cmg/get-terminal-tabs)))
+              (setq header-line-format " ")
+              (face-remap-add-relative 'header-line
+                                       :background (doom-color 'bg)
+                                       :box nil :overline nil :underline nil
+                                       :height 0.3)
+              (face-remap-add-relative 'tab-line :background (doom-color 'bg))
+              (face-remap-add-relative 'hl-line :background (doom-color 'bg))
+              (set-window-fringes (selected-window) 15 0))
 
-            ;; Make hl-line invisible in terminals
-            (face-remap-add-relative 'hl-line :background (doom-color 'bg))
-
-            ;; Fix characters that cause line height oscillation in vterm.
-            ;; If more characters need remapping, revisit by setting doom-symbol-font
-            ;; to a monospace font instead of patching individual glyphs.
-            (let ((dt (make-display-table)))
-              (aset dt 160 [32])       ; non-breaking space → space
-              (aset dt 9210 [?●])      ; ⏺ → ● (emoji font fallback causes taller line height)
-              (setq-local buffer-display-table dt))
-
-            (display-line-numbers-mode -1)
+            ;; Universal vterm settings
             (doom-modeline-set-modeline 'vterm)
-            (set-window-fringes (selected-window) 15 0)
+            (let ((dt (make-display-table)))
+              (aset dt 160 [32])
+              (aset dt 9210 [?●])
+              (setq-local buffer-display-table dt))
+            (display-line-numbers-mode -1)
             (set-process-query-on-exit-flag (get-buffer-process (current-buffer)) nil)
-
-            ;; Hide cursor when vterm window is not selected
             (setq-local cursor-in-non-selected-windows nil)
             ;; Hide Emacs cursor in Claude buffers in insert mode only —
             ;; TUI renders its own cursor. Show cursor in normal/visual for navigation.
