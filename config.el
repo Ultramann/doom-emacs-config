@@ -560,7 +560,19 @@ Skips if the current workspace already has sidebar buffers."
                                           (window-dedicated-p w)
                                           (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
                                     (window-list)))
+                 (commit-win (cl-find-if
+                              (lambda (w) (string-match-p "COMMIT_EDITMSG"
+                                                          (buffer-name (window-buffer w))))
+                              (window-list)))
                  (target-win (cond
+                              ;; Commit diff: split the commit-message window top/bottom —
+                              ;; message keeps the top third, diff fills the bottom two-thirds.
+                              ((and commit-win
+                                    (with-current-buffer buffer (derived-mode-p 'magit-diff-mode)))
+                               (split-window commit-win
+                                             (max window-min-height
+                                                  (round (/ (window-height commit-win) 3.0)))
+                                             'below))
                               ;; Commit message: use selected window if it's a main window
                               (is-commit (if (window-parameter (selected-window) 'side-drawer)
                                              (car non-sidebar-wins)
@@ -624,6 +636,12 @@ Skips if the current workspace already has sidebar buffers."
                           (when section
                             (goto-char (oref section start))
                             (magit-section-toggle section)))))
+  ;; Keep global C-h/j/k/l window navigation in magit (overrides section nav)
+  (map! :map magit-mode-map
+        :nvm "C-h" #'evil-window-left
+        :nvm "C-j" #'evil-window-down
+        :nvm "C-k" #'evil-window-up
+        :nvm "C-l" #'evil-window-right)
   ;; Open files from diff in the other window
   (evil-define-key* 'normal magit-diff-mode-map
     (kbd "RET") #'magit-diff-visit-file-other-window)
