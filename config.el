@@ -16,6 +16,12 @@
 (setq org-hide-emphasis-markers t)
 (global-visual-line-mode 1)
 (setq line-move-visual nil)
+;; Disable trackpad pinch and ctrl-scroll text scaling
+(global-unset-key [pinch])
+(global-set-key [C-wheel-up] #'ignore)
+(global-set-key [C-wheel-down] #'ignore)
+(global-set-key [C-mouse-4] #'ignore)
+(global-set-key [C-mouse-5] #'ignore)
 (setq max-mini-window-height 1)
 (setq eldoc-echo-area-use-multiline-p 1)
 (setq projectile-auto-discover nil)
