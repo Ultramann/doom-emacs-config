@@ -18,6 +18,8 @@ brew tap d12frosted/emacs-plus
 brew install emacs-plus@30
 ```
 
+Grant **Full Disk Access** to Emacs.app: System Settings → Privacy & Security → Full Disk Access → add `/Applications/Emacs.app`. Re-grant after upgrading Emacs (the binary changes and macOS invalidates the permission).
+
 ---
 
 ## 3. Doom Emacs Installation
