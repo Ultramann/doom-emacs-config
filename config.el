@@ -53,7 +53,8 @@
 (defun cmg/get-or-create-sidebar-window ()
   "Return the sidebar window, creating one if none exists.
 Undedicates the window so a new buffer can be displayed in it."
-  (let ((win (cl-find-if (lambda (w) (window-parameter w 'side-drawer))
+  (let ((win (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
+                                         (not (window-parameter w 'side-drawer-bottom))))
                          (window-list))))
     (if (and win (window-live-p win))
         (set-window-dedicated-p win nil)
@@ -1600,9 +1601,88 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
   "Minor mode for sidebar buffers (terminals, search, etc.)."
   :keymap (make-sparse-keymap))
 
+(defvar-local cmg/bottom-terminal nil
+  "Non-nil if this buffer is the bottom sidebar terminal.")
+
+(defun cmg/split-sidebar-bottom ()
+  "Split the sidebar vertically and open a terminal in the bottom half."
+  (interactive)
+  (when (window-parameter (selected-window) 'side-drawer-bottom)
+    (user-error "Already in the bottom pane"))
+  (let* ((sidebar-height (window-height (selected-window)))
+         (bottom-win (split-window (selected-window) (- sidebar-height (/ sidebar-height 4)) 'below))
+         (ws (cmg/workspace-name))
+         (buf (get-buffer-create (format "%s:Term:Bottom" ws))))
+    (cmg/set-sidebar-window-params bottom-win)
+    (set-window-parameter bottom-win 'side-drawer-bottom t)
+    (select-window bottom-win)
+    (switch-to-buffer buf)
+    (set-window-fringes bottom-win 15 0)
+    (with-current-buffer buf
+      (setq default-directory (cmg/project-root)))
+    (vterm-mode)
+    (setq-local cmg/bottom-terminal t)
+    (setq tab-line-format nil)
+    (setq header-line-format " ")
+    (face-remap-add-relative 'header-line
+                             :background (doom-color 'bg)
+                             :box nil :overline nil :underline nil
+                             :height 0.3)
+    (set-window-dedicated-p bottom-win t)
+    (when (bound-and-true-p persp-mode)
+      (persp-add-buffer buf))))
+
+(defun cmg/sidebar-other-pane ()
+  "Move to the other sidebar pane (top ↔ bottom), restoring split if maximized."
+  (interactive)
+  (when cmg/sidebar-saved-top-height
+    (cmg/sidebar-toggle-maximize))
+  (let ((target (if (window-parameter (selected-window) 'side-drawer-bottom)
+                    ;; In bottom → go to top
+                    (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
+                                                 (not (window-parameter w 'side-drawer-bottom))))
+                                (window-list))
+                  ;; In top → go to bottom
+                  (cl-find-if (lambda (w) (window-parameter w 'side-drawer-bottom))
+                              (window-list)))))
+    (when target (select-window target))))
+
+(defvar cmg/sidebar-saved-top-height nil
+  "Saved top pane height for sidebar maximize toggle.")
+
+(defun cmg/sidebar-toggle-maximize ()
+  "Maximize the current sidebar pane, or restore the previous split."
+  (interactive)
+  (let* ((top (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
+                                           (not (window-parameter w 'side-drawer-bottom))))
+                          (window-list)))
+         (bot (cl-find-if (lambda (w) (window-parameter w 'side-drawer-bottom))
+                          (window-list))))
+    (when (and top bot)
+      (let ((current (selected-window))
+            (other (if (eq (selected-window) bot) top bot)))
+        (if cmg/sidebar-saved-top-height
+            ;; Restore
+            (let ((delta (- cmg/sidebar-saved-top-height (window-height top))))
+              (ignore-errors (window-resize top delta nil))
+              (setq cmg/sidebar-saved-top-height nil)
+              ;; Force vterm redraw: maximize top, redisplay, then restore
+              (let ((grow (- (window-height bot) window-min-height)))
+                (ignore-errors (window-resize top grow nil))
+                (redisplay t)
+                (ignore-errors (window-resize top (- grow) nil))))
+          ;; Maximize
+          (setq cmg/sidebar-saved-top-height (window-height top))
+          (let ((delta (- (window-height other) window-min-height)))
+            (ignore-errors (window-resize current delta nil))))))))
+
 (evil-define-key* '(normal insert visual) cmg/sidebar-mode-map
   (kbd "C-c") (lambda () (interactive) (vterm-send-key "c" nil nil t))
   (kbd "C-t") #'cmg/open-new-sidebar-terminal
+  (kbd "C-s") #'cmg/split-sidebar-bottom
+  (kbd "C-m") #'cmg/sidebar-toggle-maximize
+  (kbd "C-j") #'cmg/sidebar-other-pane
+  (kbd "C-k") #'cmg/sidebar-other-pane
   ;; override Doom's insert-state C-n/C-p (corfu)
   (kbd "C-n") #'cmg/sidebar-next-tab
   (kbd "C-p") #'cmg/sidebar-prev-tab
@@ -1924,7 +2004,9 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 (defun cmg/sidebar-next-tab ()
   "Switch to the next sidebar buffer in order."
   (interactive)
-  (let* ((all-terms (cl-sort (cmg/workspace-sidebar-buffers)
+  (when cmg/bottom-terminal (user-error "Use C-k to switch to top pane"))
+  (let* ((all-terms (cl-sort (cl-remove-if (lambda (b) (buffer-local-value 'cmg/bottom-terminal b))
+                                           (cmg/workspace-sidebar-buffers))
                              #'string-lessp :key #'buffer-name))
          (current (current-buffer))
          (pos (cl-position current all-terms))
@@ -1942,7 +2024,9 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 (defun cmg/sidebar-prev-tab ()
   "Switch to the previous sidebar buffer in order."
   (interactive)
-  (let* ((all-terms (cl-sort (cmg/workspace-sidebar-buffers)
+  (when cmg/bottom-terminal (user-error "Use C-k to switch to top pane"))
+  (let* ((all-terms (cl-sort (cl-remove-if (lambda (b) (buffer-local-value 'cmg/bottom-terminal b))
+                                           (cmg/workspace-sidebar-buffers))
                              #'string-lessp :key #'buffer-name))
          (current (current-buffer))
          (pos (cl-position current all-terms))
@@ -1973,7 +2057,8 @@ lines that were split by terminal overflow (1-space indent after dedent)."
          (special-terms (cl-remove-if (lambda (b) (string-prefix-p term-prefix (buffer-name b)))
                                       ws-vterm-buffers))
          (generic-terms (cl-sort
-                         (cl-remove-if-not (lambda (b) (string-prefix-p term-prefix (buffer-name b)))
+                         (cl-remove-if-not (lambda (b) (and (string-prefix-p term-prefix (buffer-name b))
+                                                            (not (buffer-local-value 'cmg/bottom-terminal b))))
                                            ws-vterm-buffers)
                          #'string-lessp :key #'buffer-name))
          (counter 1))
@@ -2052,8 +2137,10 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 (defun cmg/get-terminal-tabs ()
   "Return a propertized string of all sidebar buffers styled as tabs."
   (let* ((all-terminals (cmg/workspace-sidebar-buffers))
-         ;; Sort by name so Claude comes first, then Term:1, Term:2, etc.
-         (sorted-terms (cl-sort all-terminals #'string-lessp :key #'buffer-name)))
+         ;; Exclude bottom terminal, sort by name (Claude first, then Term:1, Term:2, etc.)
+         (filtered (cl-remove-if (lambda (b) (buffer-local-value 'cmg/bottom-terminal b))
+                                 all-terminals))
+         (sorted-terms (cl-sort filtered #'string-lessp :key #'buffer-name)))
     (concat
      " "
      (mapconcat
