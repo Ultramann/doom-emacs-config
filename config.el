@@ -698,11 +698,19 @@ Skips if the current workspace already has sidebar buffers."
         :nvm "C-j" #'evil-window-down
         :nvm "C-k" #'evil-window-up
         :nvm "C-l" #'evil-window-right)
-  ;; Open files from diff in the other window
+  ;; RET: visit the file in the other window when point is on a diff/file section;
+  ;; otherwise run the section's default action (fixes "Cannot determine file to
+  ;; visit" when RET is pressed on headers, commits, untracked sections, etc.).
+  (defun cmg/magit-visit-file-other-window-dwim ()
+    (interactive)
+    (if (magit-diff--file)
+        (magit-diff-visit-file-other-window)
+      (let ((cmd (command-remapping 'magit-visit-thing (point))))
+        (if cmd (call-interactively cmd) (magit-visit-thing)))))
   (evil-define-key* 'normal magit-diff-mode-map
-    (kbd "RET") #'magit-diff-visit-file-other-window)
+    (kbd "RET") #'cmg/magit-visit-file-other-window-dwim)
   (evil-define-key* 'normal magit-status-mode-map
-    (kbd "RET") #'magit-diff-visit-file-other-window)
+    (kbd "RET") #'cmg/magit-visit-file-other-window-dwim)
   ;; Swap f (Fetch->Pull) and F (Pull->Fetch) in magit-dispatch and magit-mode-map
   (define-key magit-mode-map "f" #'magit-pull)
   (define-key magit-mode-map "F" #'magit-fetch)
