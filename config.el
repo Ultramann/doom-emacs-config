@@ -1718,6 +1718,11 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
   [M-left]  (lambda () (interactive) (vterm-send-key "b" nil t))
   [M-right] (lambda () (interactive) (vterm-send-key "f" nil t)))
 
+;; Vim-style scrolling: C-u/C-d send PageUp/PageDown to terminal (insert mode only)
+(evil-define-key* '(insert) cmg/sidebar-mode-map
+  (kbd "C-u") (lambda () (interactive) (vterm-send-string "\e[5~"))
+  (kbd "C-d") (lambda () (interactive) (vterm-send-string "\e[6~")))
+
 (evil-define-key* '(normal) cmg/sidebar-mode-map
   (kbd "[f") #'cmg/vterm-prev-file-ref
   (kbd "]f") #'cmg/vterm-next-file-ref)
