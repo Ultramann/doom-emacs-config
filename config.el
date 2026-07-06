@@ -50,23 +50,56 @@
     (file-name-nondirectory
      (directory-file-name (or (doom-project-root) default-directory)))))
 
+;; — Sidebar API —
+;; All sidebar window detection goes through these functions.
+;; Buffer name is authoritative (never lost). Window params are fast but can be
+;; lost on workspace restore — self-healed on detection.
+
 (defun cmg/set-sidebar-window-params (win)
   "Set window parameters on WIN to protect it like treemacs."
   (set-window-parameter win 'side-drawer t)
   (set-window-parameter win 'no-delete-other-windows t)
   (set-window-parameter win 'no-other-window t))
 
+(defun cmg/sidebar-window-p (win)
+  "Return non-nil if WIN is a sidebar window (top or bottom).
+Checks window param first, falls back to buffer name, self-heals params."
+  (or (window-parameter win 'side-drawer)
+      (when (cmg/sidebar-buffer-p (window-buffer win))
+        (cmg/set-sidebar-window-params win)
+        t)))
+
+(defun cmg/sidebar-top-window ()
+  "Return the top sidebar window, or nil."
+  (cl-find-if (lambda (w) (and (cmg/sidebar-window-p w)
+                               (not (window-parameter w 'side-drawer-bottom))
+                               (not (buffer-local-value 'cmg/bottom-terminal (window-buffer w)))))
+              (window-list)))
+
+(defun cmg/sidebar-bottom-window ()
+  "Return the bottom sidebar window, or nil."
+  (cl-find-if (lambda (w) (or (window-parameter w 'side-drawer-bottom)
+                              (buffer-local-value 'cmg/bottom-terminal (window-buffer w))))
+              (window-list)))
+
+(defun cmg/main-windows ()
+  "Return list of non-sidebar, non-treemacs, non-minibuffer windows."
+  (cl-remove-if
+   (lambda (w)
+     (or (cmg/sidebar-window-p w)
+         (and (fboundp 'treemacs-get-local-window)
+              (eq w (treemacs-get-local-window)))
+         (minibufferp (window-buffer w))))
+   (window-list)))
+
+(defun cmg/last-main-window-p ()
+  "Return non-nil if there is only one main window left."
+  (<= (length (cmg/main-windows)) 1))
+
 (defun cmg/get-or-create-sidebar-window ()
   "Return the top sidebar window, creating one if none exists.
 Undedicates the window so a new buffer can be displayed in it."
-  (let ((win (or
-              ;; Find existing top sidebar
-              (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
-                                          (not (window-parameter w 'side-drawer-bottom))))
-                          (window-list))
-              ;; If in bottom pane, the top is directly above
-              (and (window-parameter (selected-window) 'side-drawer-bottom)
-                   (window-in-direction 'above (selected-window))))))
+  (let ((win (cmg/sidebar-top-window)))
     (if (and win (window-live-p win))
         (set-window-dedicated-p win nil)
       (setq win (split-window (frame-root-window) (- cmg/sidebar-width) 'right))
@@ -147,24 +180,14 @@ PROJECT-DIR overrides the terminal's working directory."
   "Close all other main windows, keeping the current one and sidebars."
   (interactive)
   (let ((keep (selected-window)))
-    (dolist (win (window-list))
-      (when (and (not (eq win keep))
-                 (not (window-parameter win 'side-drawer))
-                 (not (window-dedicated-p win))
-                 (not (and (fboundp 'treemacs-get-local-window)
-                           (eq win (treemacs-get-local-window)))))
+    (dolist (win (cmg/main-windows))
+      (unless (eq win keep)
         (delete-window win)))))
 
 (defun cmg/vterm-here ()
   "Open a vterm in the current window area, sized to sidebar width."
   (interactive)
-  (let* ((main-wins (cl-remove-if
-                     (lambda (w)
-                       (or (window-parameter w 'side-drawer)
-                           (window-dedicated-p w)
-                           (and (fboundp 'treemacs-get-local-window)
-                                (eq w (treemacs-get-local-window)))))
-                     (window-list)))
+  (let* ((main-wins (cmg/main-windows))
          (win (cond
                ;; Two+ splits: use the rightmost main window
                ((>= (length main-wins) 2)
@@ -214,8 +237,7 @@ PROJECT-DIR overrides the terminal's working directory."
 ;; Lock sidebar width on frame resize
 (defun cmg/enforce-sidebar-width (&rest _)
   "Ensure the sidebar window stays at cmg/sidebar-width columns."
-  (when-let ((win (or (cl-find-if (lambda (w) (window-parameter w 'side-drawer)) (window-list))
-                      (cl-find-if (lambda (w) (cmg/sidebar-buffer-p (window-buffer w))) (window-list)))))
+  (when-let ((win (cmg/sidebar-top-window)))
     (let ((delta (- cmg/sidebar-width (window-total-width win))))
       (unless (zerop delta)
         (with-selected-window win
@@ -237,11 +259,7 @@ PROJECT-DIR overrides the terminal's working directory."
   (if cmg/open-in-other-window
       (let* ((_ (setq cmg/open-in-other-window nil))
              (origin (or (minibuffer-selected-window) (selected-window)))
-             (non-sidebar-wins (cl-remove-if
-                                (lambda (w)
-                                  (or (window-parameter w 'side-drawer)
-                                      (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
-                                (window-list)))
+             (non-sidebar-wins (cmg/main-windows))
              (other-win (cl-find-if (lambda (w) (not (eq w origin)))
                                     non-sidebar-wins))
              (target (or other-win
@@ -508,25 +526,21 @@ Skips if the current workspace already has sidebar buffers."
                                 (kill-buffer buf))))
                            ;; Everything else
                            (t
-                            (let ((main-wins (cmg/main-windows)))
-                              (kill-current-buffer)
-                              ;; If multiple main windows and no unique real buffer
-                              ;; left for this window, close the split
-                              (if (and (> (length main-wins) 1)
-                                       (or (cmg/sidebar-buffer-p (current-buffer))
-                                           (not (doom-real-buffer-p (current-buffer)))
-                                           (cl-find-if (lambda (w)
-                                                         (and (not (eq w (selected-window)))
-                                                              (eq (window-buffer w) (current-buffer))))
-                                                       main-wins)))
-                                  (delete-window)
-                                ;; Single window: fall back to dashboard
-                                (when (or (cmg/sidebar-buffer-p (current-buffer))
-                                          (not (doom-real-buffer-p (current-buffer))))
-                                  (previous-buffer)
-                                  (when (or (cmg/sidebar-buffer-p (current-buffer))
-                                            (not (doom-real-buffer-p (current-buffer))))
-                                    (switch-to-buffer (doom-fallback-buffer))))))))))
+                            (kill-current-buffer)
+                            (cond
+                             ;; Multiple main windows and showing duplicate/non-real: close split
+                             ((and (not (cmg/last-main-window-p))
+                                   (or (cmg/sidebar-buffer-p (current-buffer))
+                                       (not (doom-real-buffer-p (current-buffer)))
+                                       (cl-find-if (lambda (w)
+                                                     (and (not (eq w (selected-window)))
+                                                          (eq (window-buffer w) (current-buffer))))
+                                                   (cmg/main-windows))))
+                              (delete-window))
+                             ;; Last main window showing non-real buffer: show dashboard
+                             ((or (cmg/sidebar-buffer-p (current-buffer))
+                                  (not (doom-real-buffer-p (current-buffer))))
+                              (switch-to-buffer (doom-fallback-buffer))))))))
 (evil-ex-define-cmd "wq" (lambda ()
                           (interactive)
                           (if (bound-and-true-p with-editor-mode)
@@ -623,12 +637,7 @@ Skips if the current workspace already has sidebar buffers."
                                   (with-current-buffer (window-buffer w)
                                     (derived-mode-p 'magit-mode)))
                                 (window-list)))
-                 (non-sidebar-wins (cl-remove-if
-                                    (lambda (w)
-                                      (or (window-parameter w 'side-drawer)
-                                          (window-dedicated-p w)
-                                          (and (fboundp 'treemacs-get-local-buffer) (eq (window-buffer w) (treemacs-get-local-buffer)))))
-                                    (window-list)))
+                 (non-sidebar-wins (cmg/main-windows))
                  (commit-win (cl-find-if
                               (lambda (w) (string-match-p "COMMIT_EDITMSG"
                                                           (buffer-name (window-buffer w))))
@@ -643,12 +652,11 @@ Skips if the current workspace already has sidebar buffers."
                                                   (round (/ (window-height commit-win) 3.0)))
                                              'below))
                               ;; Commit message: use selected window if it's a main window
-                              (is-commit (if (window-parameter (selected-window) 'side-drawer)
+                              (is-commit (if (cmg/sidebar-window-p (selected-window))
                                              (car non-sidebar-wins)
                                            (selected-window)))
-                              ;; Reuse existing magit window (only if it's not a sidebar)
-                              ((and existing-win (not (window-parameter existing-win 'side-drawer))
-                                    (not (window-dedicated-p existing-win)))
+                              ;; Reuse existing magit window (only if it's a main window)
+                              ((and existing-win (not (cmg/sidebar-window-p existing-win)))
                                existing-win)
                               ;; Two+ main windows: use the other one
                               ((>= (length non-sidebar-wins) 2)
@@ -794,7 +802,7 @@ Skips if the current workspace already has sidebar buffers."
 (map! :leader
       ;; Buffer — switch to last buffer, but stay in sidebar if in sidebar
       :desc "Switch to last buffer" "b l"
-      (cmd! (if (window-parameter (selected-window) 'side-drawer)
+      (cmd! (if (cmg/sidebar-window-p (selected-window))
                 (cmg/sidebar-prev-tab)
               (evil-switch-to-windows-last-buffer)))
 
@@ -871,10 +879,8 @@ Skips if the current workspace already has sidebar buffers."
       :desc "Clone buffer"             "b c" (cmd! (switch-to-buffer-other-window (current-buffer)))
       :desc "Clone split buffer here"  "b C" (cmd!
                                               (let* ((other (cl-find-if
-                                                             (lambda (w)
-                                                               (and (not (eq w (selected-window)))
-                                                                    (not (window-parameter w 'side-drawer))))
-                                                             (window-list))))
+                                                             (lambda (w) (not (eq w (selected-window))))
+                                                             (cmg/main-windows))))
                                                 (when other
                                                   (switch-to-buffer (window-buffer other)))))
 
@@ -895,10 +901,7 @@ Skips if the current workspace already has sidebar buffers."
   (interactive)
   (let ((file (treemacs--prop-at-point :path)))
     (when (and file (stringp file) (file-regular-p file))
-      (let* ((main-wins (cl-remove-if (lambda (w)
-                                        (or (window-parameter w 'side-drawer)
-                                            (eq w (treemacs-get-local-window))))
-                                      (window-list)))
+      (let* ((main-wins (cmg/main-windows))
              (target (if (> (length main-wins) 1)
                          ;; Multiple main splits — use the one without focus
                          (or (cl-find-if-not (lambda (w) (eq w (get-mru-window))) main-wins)
@@ -920,11 +923,8 @@ Skips if the current workspace already has sidebar buffers."
   (defadvice! +treemacs-open-in-main-window-a (fn &rest args)
     :around #'get-mru-window
     (let ((win (apply fn args)))
-      (if (and win (window-parameter win 'side-drawer))
-          (cl-find-if (lambda (w)
-                        (and (not (window-parameter w 'side-drawer))
-                             (not (eq w (treemacs-get-local-window)))))
-                      (window-list))
+      (if (and win (cmg/sidebar-window-p win))
+          (car (cmg/main-windows))
         win)))
   ;; Guard against treemacs falling back to $HOME when path can't be resolved (bug #1028)
   (defadvice! +treemacs-no-home-fallback-a (fn btn prompt &optional dir-only)
@@ -999,31 +999,17 @@ Skips if the current workspace already has sidebar buffers."
 (add-hook 'window-selection-change-functions
           (lambda (_)
             (let ((win (selected-window)))
-              (when (and (not (window-parameter win 'side-drawer))
-                         (not (and (fboundp 'treemacs-get-local-window)
-                                   (eq win (treemacs-get-local-window))))
-                         (not (minibufferp (window-buffer win))))
+              (when (cl-find win (cmg/main-windows))
                 (setq cmg/last-main-window win)))))
 
-(defun cmg/main-windows ()
-  "Return list of non-sidebar, non-treemacs, non-minibuffer windows."
-  (cl-remove-if
-   (lambda (w)
-     (or (window-parameter w 'side-drawer)
-         (and (fboundp 'treemacs-get-local-window)
-              (eq w (treemacs-get-local-window)))
-         (minibufferp (window-buffer w))))
-   (window-list)))
+
 
 (defun cmg/move-buffer-to (direction)
   "Move current buffer to the window in DIRECTION.
 If only one main window exists, create a split in that direction first."
   (let* ((buf (current-buffer))
          (target (windmove-find-other-window direction))
-         (target-ok (and target
-                         (not (window-parameter target 'side-drawer))
-                         (not (and (fboundp 'treemacs-get-local-window)
-                                   (eq target (treemacs-get-local-window)))))))
+         (target-ok (and target (cl-find target (cmg/main-windows)))))
     (if target-ok
         (progn
           (set-window-buffer (selected-window) (other-buffer buf))
@@ -1060,13 +1046,7 @@ If only one main window exists, create a split in that direction first."
 (defun cmg/exchange-main-buffers ()
   "Swap buffers between the two main (non-sidebar, non-treemacs) windows."
   (interactive)
-  (let* ((main-wins (cl-remove-if
-                     (lambda (w)
-                       (or (window-parameter w 'side-drawer)
-                           (and (fboundp 'treemacs-get-local-window)
-                                (eq w (treemacs-get-local-window)))
-                           (minibufferp (window-buffer w))))
-                     (window-list)))
+  (let* ((main-wins (cmg/main-windows))
          (other (cl-find-if (lambda (w) (not (eq w (selected-window)))) main-wins)))
     (if other
         (let ((buf-a (window-buffer (selected-window)))
@@ -1098,12 +1078,12 @@ If only one main window exists, create a split in that direction first."
 (defun cmg/focus-sidebar ()
   "Toggle between sidebar and main window."
   (interactive)
-  (if (window-parameter (selected-window) 'side-drawer)
+  (if (cmg/sidebar-window-p (selected-window))
       ;; In sidebar — jump back to last main window
       (when (and cmg/last-main-window (window-live-p cmg/last-main-window))
         (select-window cmg/last-main-window))
     ;; In main — jump to sidebar
-    (when-let ((win (cl-find-if (lambda (w) (window-parameter w 'side-drawer)) (window-list))))
+    (when-let ((win (cmg/sidebar-top-window)))
       (select-window win))))
 
 ;; Visual line movement and remappings
@@ -1693,13 +1673,8 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
   (when cmg/sidebar-saved-top-height
     (cmg/sidebar-toggle-maximize))
   (let ((target (if (window-parameter (selected-window) 'side-drawer-bottom)
-                    ;; In bottom → go to top
-                    (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
-                                                 (not (window-parameter w 'side-drawer-bottom))))
-                                (window-list))
-                  ;; In top → go to bottom
-                  (cl-find-if (lambda (w) (window-parameter w 'side-drawer-bottom))
-                              (window-list)))))
+                    (cmg/sidebar-top-window)
+                  (cmg/sidebar-bottom-window))))
     (when target (select-window target))))
 
 (defvar cmg/sidebar-saved-top-height nil
@@ -1708,11 +1683,8 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
 (defun cmg/sidebar-toggle-maximize ()
   "Maximize the current sidebar pane, or restore the previous split."
   (interactive)
-  (let* ((top (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
-                                           (not (window-parameter w 'side-drawer-bottom))))
-                          (window-list)))
-         (bot (cl-find-if (lambda (w) (window-parameter w 'side-drawer-bottom))
-                          (window-list))))
+  (let* ((top (cmg/sidebar-top-window))
+         (bot (cmg/sidebar-bottom-window)))
     (when (and top bot)
       (let ((current (selected-window))
             (other (if (eq (selected-window) bot) top bot)))
@@ -1757,14 +1729,14 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
 ;; Prevent sidebar buffers from appearing in non-sidebar windows
 (set-frame-parameter nil 'buffer-predicate
                      (lambda (buf)
-                       (if (window-parameter (selected-window) 'side-drawer)
+                       (if (cmg/sidebar-window-p (selected-window))
                            t
                          (not (cmg/sidebar-buffer-p buf)))))
 (add-hook 'after-make-frame-functions
           (lambda (frame)
             (set-frame-parameter frame 'buffer-predicate
                                  (lambda (buf)
-                                   (if (window-parameter (selected-window) 'side-drawer)
+                                   (if (cmg/sidebar-window-p (selected-window))
                                        t
                                      (not (cmg/sidebar-buffer-p buf)))))))
 
@@ -1783,8 +1755,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
 (defun cmg/maybe-dedicate-sidebar-window ()
   "Set sidebar window as dedicated if showing a sidebar buffer."
   (dolist (win (window-list))
-    (when (and (window-parameter win 'side-drawer)
-               (cmg/sidebar-buffer-p (window-buffer win)))
+    (when (cmg/sidebar-window-p win)
       (set-window-dedicated-p win t))))
 (add-hook 'window-buffer-change-functions (lambda (_) (cmg/maybe-dedicate-sidebar-window)))
 
@@ -1871,9 +1842,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
     (let ((search-dir default-directory))
       (funcall fn
                (lambda (file-name)
-                 (let ((win (cl-find-if (lambda (w)
-                                          (not (window-parameter w 'side-drawer)))
-                                        (window-list))))
+                 (let ((win (car (cmg/main-windows))))
                    (when win (select-window win))
                    (let ((default-directory search-dir))
                      (find-file file-name))))))))
@@ -1890,8 +1859,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
   (interactive)
   (let* ((ws (cmg/workspace-name))
          (buf (generate-new-buffer (format "%s:Term:new" ws)))
-         (win (or (cl-find-if (lambda (w) (window-parameter w 'side-drawer)) (window-list))
-                  (cl-find-if (lambda (w) (cmg/sidebar-buffer-p (window-buffer w))) (window-list)))))
+         (win (cmg/sidebar-top-window)))
     (with-current-buffer buf
       (setq default-directory (cmg/project-root)))
     (if (and win (window-live-p win))
@@ -1911,9 +1879,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
 (defun cmg/toggle-terminal-sidebar ()
   "Toggle the terminal sidebar, scoped to current workspace."
   (interactive)
-  (let ((sidebar-window (cl-find-if (lambda (w)
-                                     (cmg/sidebar-buffer-p (window-buffer w)))
-                                   (window-list))))
+  (let ((sidebar-window (cmg/sidebar-top-window)))
     (if sidebar-window
         (delete-window sidebar-window)
       (let ((existing-term (car (cmg/workspace-sidebar-buffers))))
@@ -1958,12 +1924,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
                       (if (file-name-absolute-p file) file
                         (expand-file-name file project-root)))))
     (if (and full-path (file-exists-p full-path))
-        (let ((win (cl-find-if (lambda (w)
-                                 (and (not (window-parameter w 'side-drawer))
-                                      (not (window-dedicated-p w))
-                                      (not (and (fboundp 'treemacs-get-local-buffer)
-                                                (eq (window-buffer w) (treemacs-get-local-buffer))))))
-                               (window-list))))
+        (let ((win (car (cmg/main-windows))))
           (when win
             (select-window win)
             (find-file full-path)
@@ -2282,12 +2243,7 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 ;; Allow opening files from vterm via `open <file>`
 (defun cmg/vterm-find-file (file)
   "Open FILE in the main (non-sidebar) window."
-  (let ((win (cl-find-if (lambda (w)
-                           (and (not (window-parameter w 'side-drawer))
-                                (not (window-dedicated-p w))
-                                (not (and (fboundp 'treemacs-get-local-buffer)
-                                          (eq (window-buffer w) (treemacs-get-local-buffer))))))
-                         (window-list))))
+  (let ((win (car (cmg/main-windows))))
     (when win (select-window win))
     (find-file file)))
 (after! vterm
