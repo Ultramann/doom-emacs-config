@@ -57,11 +57,16 @@
   (set-window-parameter win 'no-other-window t))
 
 (defun cmg/get-or-create-sidebar-window ()
-  "Return the sidebar window, creating one if none exists.
+  "Return the top sidebar window, creating one if none exists.
 Undedicates the window so a new buffer can be displayed in it."
-  (let ((win (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
-                                         (not (window-parameter w 'side-drawer-bottom))))
-                         (window-list))))
+  (let ((win (or
+              ;; Find existing top sidebar
+              (cl-find-if (lambda (w) (and (window-parameter w 'side-drawer)
+                                          (not (window-parameter w 'side-drawer-bottom))))
+                          (window-list))
+              ;; If in bottom pane, the top is directly above
+              (and (window-parameter (selected-window) 'side-drawer-bottom)
+                   (window-in-direction 'above (selected-window))))))
     (if (and win (window-live-p win))
         (set-window-dedicated-p win nil)
       (setq win (split-window (frame-root-window) (- cmg/sidebar-width) 'right))
@@ -178,7 +183,7 @@ PROJECT-DIR overrides the terminal's working directory."
     (when (> (length (window-list)) 1)
       (ignore-errors
         (window-resize win (- cmg/sidebar-width (window-width win)) t)))
-    (+vterm/here)))
+    (+vterm/here nil)))
 
 (setq display-line-numbers-width 2)
 (setq display-line-numbers-type 'relative)
@@ -194,8 +199,8 @@ PROJECT-DIR overrides the terminal's working directory."
 (add-hook 'evil-visual-state-entry-hook
           (lambda ()
             (hl-line-mode -1)
-            (let ((bg (doom-color 'bg)))
-              (dolist (face '(org-block org-block-begin-line org-block-end-line markdown-code-face))
+            (let ((bg (doom-color 'base1)))
+              (dolist (face '(org-block org-block-begin-line org-block-end-line markdown-code-face markdown-pre-face))
                 (when (facep face)
                   (push (face-remap-add-relative face :background bg)
                         cmg/block-face-remap-cookies))))))
@@ -483,6 +488,14 @@ Skips if the current workspace already has sidebar buffers."
                             (run-at-time "0.1 sec" nil (lambda () (message nil))))
                            ;; Treemacs: do nothing
                            ((derived-mode-p 'treemacs-mode) nil)
+                           ;; Bottom terminal: kill buffer and delete the split
+                           ((bound-and-true-p cmg/bottom-terminal)
+                            (let ((buf (current-buffer))
+                                  (win (selected-window)))
+                              (set-window-dedicated-p win nil)
+                              (setq cmg/sidebar-saved-top-height nil)
+                              (delete-window win)
+                              (kill-buffer buf)))
                            ;; Sidebar buffer: kill and switch to next sidebar tab
                            ((cmg/sidebar-buffer-p (current-buffer))
                             (let ((buf (current-buffer))
@@ -1178,16 +1191,40 @@ If only one main window exists, create a split in that direction first."
     (when (get-buffer buf-name) (kill-buffer buf-name))
     (let ((buf (get-buffer-create buf-name)))
       (with-current-buffer buf
-        (call-process "pandoc" nil t nil file "-t" "org")
+        (call-process "python3" nil t nil "-c"
+                      "import json,sys
+nb=json.load(open(sys.argv[1]))
+for cell in nb['cells']:
+    if cell['cell_type']=='markdown':
+        print(''.join(cell['source']))
+        print()
+    elif cell['cell_type']=='code':
+        print('#### In:')
+        print('```python')
+        print(''.join(cell['source']).rstrip())
+        print('```')
+        has_out=False
+        for out in cell.get('outputs',[]):
+            txt=None
+            if 'text' in out:
+                txt=''.join(out['text']).rstrip()
+            elif 'data' in out:
+                if 'text/plain' in out['data']:
+                    txt=''.join(out['data']['text/plain']).rstrip()
+            if txt:
+                if not has_out:
+                    print('#### Out:')
+                    print('```')
+                    has_out=True
+                print(txt)
+        if has_out:
+            print('```')
+        print()
+" file)
         (goto-char (point-min))
-        (while (search-forward "#+begin_src jupyter-python" nil t)
-          (replace-match "#+begin_src python" t t))
-        ;; Promote subheadings to top-level (same as title)
-        (goto-char (point-min))
-        (while (re-search-forward "^\\*\\*" nil t)
-          (replace-match "*" t t))
-        (goto-char (point-min))
-        (org-mode)
+        (markdown-mode)
+        (setq-local markdown-hide-markup t)
+        (setq-local markdown-header-scaling t)
         (visual-line-mode 1)
         (read-only-mode 1)
         (set-buffer-modified-p nil))
@@ -1204,6 +1241,10 @@ If only one main window exists, create a split in that direction first."
 ;; ——————————————————————————————————————————————————————————————————
 ;; Markdown
 ;; ——————————————————————————————————————————————————————————————————
+
+(setq markdown-header-scaling nil)
+(setq markdown-header-scaling-values '(1.4 1.3 1.2 1.1 1.0 1.0))
+(setq markdown-hide-markup nil)
 
 ;; Doom enables `markdown-fontify-code-blocks-natively', which re-runs each
 ;; fenced block's language major-mode through font-lock. In buffers with code

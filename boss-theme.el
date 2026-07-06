@@ -152,7 +152,8 @@
    ;; Fill column indicator
    (fill-column-indicator :foreground base4)
    ;; Markdown
-   (markdown-code-face :background base1 :extend t)
+   (markdown-code-face :background base3 :extend t)
+   (markdown-pre-face :background base3 :extend t)
    (markdown-italic-face :foreground fg :slant 'italic)
    (markdown-bold-face :foreground fg :weight 'bold)
    ;; Transient (magit menu)
