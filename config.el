@@ -219,20 +219,20 @@ PROJECT-DIR overrides the terminal's working directory."
 
 ;; Disable hl-line and code block backgrounds in visual mode (selection highlight is enough)
 (defvar-local cmg/block-face-remap-cookies nil)
-(add-hook 'evil-visual-state-entry-hook
-          (lambda ()
-            (hl-line-mode -1)
-            (let ((bg (doom-color 'base1)))
-              (dolist (face '(org-block org-block-begin-line org-block-end-line markdown-code-face markdown-pre-face))
-                (when (facep face)
-                  (push (face-remap-add-relative face :background bg)
-                        cmg/block-face-remap-cookies))))))
-(add-hook 'evil-visual-state-exit-hook
-          (lambda ()
-            (hl-line-mode 1)
-            (dolist (cookie cmg/block-face-remap-cookies)
-              (face-remap-remove-relative cookie))
-            (setq-local cmg/block-face-remap-cookies nil)))
+(defun cmg/visual-state-entry-h ()
+  (hl-line-mode -1)
+  (let ((bg (doom-color 'base1)))
+    (dolist (face '(org-block org-block-begin-line org-block-end-line markdown-code-face markdown-pre-face))
+      (when (facep face)
+        (push (face-remap-add-relative face :background bg)
+              cmg/block-face-remap-cookies)))))
+(defun cmg/visual-state-exit-h ()
+  (hl-line-mode 1)
+  (dolist (cookie cmg/block-face-remap-cookies)
+    (face-remap-remove-relative cookie))
+  (setq-local cmg/block-face-remap-cookies nil))
+(add-hook 'evil-visual-state-entry-hook #'cmg/visual-state-entry-h)
+(add-hook 'evil-visual-state-exit-hook #'cmg/visual-state-exit-h)
 
 ;; Lock sidebar width on frame resize
 (defun cmg/enforce-sidebar-width (&rest _)
@@ -349,9 +349,9 @@ PROJECT-DIR overrides the terminal's working directory."
       (+dashboard-reload t))))
 
 ;; Hide hl-line in dashboard
-(add-hook '+dashboard-mode-hook
-          (lambda ()
-            (face-remap-add-relative 'hl-line :background (doom-color 'bg))))
+(defun cmg/dashboard-mode-h ()
+  (face-remap-add-relative 'hl-line :background (doom-color 'bg)))
+(add-hook '+dashboard-mode-hook #'cmg/dashboard-mode-h)
 
 (defun cmg/project-layout (&optional dir)
   "Set up the default 3-pane layout: treemacs | dashboard | terminal.
@@ -406,27 +406,27 @@ Skips if the current workspace already has sidebar buffers."
         (cons 'winner-mode (bound-and-true-p persp-not-persp-minor-modes-to-persist)))
   ;; Only refresh dashboard for workspaces that already have a project set.
   ;; New workspaces get their dashboard refreshed by cmg/project-layout instead.
-  (add-hook 'persp-activated-functions
-            (lambda (_)
-              (when (persp-parameter '+workspace-project)
-                (cmg/refresh-dashboard)
-                ;; Recreate terminal sidebar if workspace was restored without one
-                (unless (cmg/workspace-sidebar-buffers)
-                  (run-with-idle-timer 0.3 nil
-                    (lambda ()
-                      (when (and (persp-parameter '+workspace-project)
-                                 (not (cmg/workspace-sidebar-buffers)))
-                        (save-selected-window
-                          (cmg/create-sidebar-terminal
-                           (persp-parameter '+workspace-project)))))))
-                ;; Force vterm resize after workspace switch
-                (dolist (win (window-list))
-                  (when (with-current-buffer (window-buffer win)
-                          (derived-mode-p 'vterm-mode))
-                    (with-selected-window win
-                      (vterm--window-adjust-process-window-size
-                       (get-buffer-process (current-buffer))
-                       (list win))))))))
+  (defun cmg/persp-activated-h (_)
+    (when (persp-parameter '+workspace-project)
+      (cmg/refresh-dashboard)
+      ;; Recreate terminal sidebar if workspace was restored without one
+      (unless (cmg/workspace-sidebar-buffers)
+        (run-with-idle-timer 0.3 nil
+          (lambda ()
+            (when (and (persp-parameter '+workspace-project)
+                       (not (cmg/workspace-sidebar-buffers)))
+              (save-selected-window
+                (cmg/create-sidebar-terminal
+                 (persp-parameter '+workspace-project)))))))
+      ;; Force vterm resize after workspace switch
+      (dolist (win (window-list))
+        (when (with-current-buffer (window-buffer win)
+                (derived-mode-p 'vterm-mode))
+          (with-selected-window win
+            (vterm--window-adjust-process-window-size
+             (get-buffer-process (current-buffer))
+             (list win)))))))
+  (add-hook 'persp-activated-functions #'cmg/persp-activated-h)
 
   ;; Filter vterm buffers from persp save (they can't be serialized)
   (setq persp-filter-save-buffers-functions
@@ -458,39 +458,38 @@ Skips if the current workspace already has sidebar buffers."
 
 ;; Startup: restore workspace immediately, defer terminal until frame is sized
 (defvar cmg/startup-dir nil)
-(add-hook 'doom-after-init-hook
-          (lambda ()
-            (let* ((last-project (when (file-exists-p cmg/last-project-file)
-                                   (string-trim (with-temp-buffer
-                                                  (insert-file-contents cmg/last-project-file)
-                                                  (buffer-string))))))
-              (setq cmg/startup-dir (if (and last-project
-                                             (file-directory-p last-project)
-                                             (not (string= last-project "~/.config/doom/")))
-                                       last-project
-                                     "~/.config/doom/"))
-              (setq default-directory cmg/startup-dir)
-              ;; Defer rename + dashboard + terminal until persp-mode is fully initialized
-              (run-with-idle-timer 0.1 nil
-                (lambda ()
-                  (when (bound-and-true-p persp-mode)
-                    (+workspace-rename "main"
-                                       (file-name-nondirectory
-                                        (directory-file-name cmg/startup-dir)))
-                    (set-persp-parameter '+workspace-project cmg/startup-dir))
-                  (cmg/refresh-dashboard cmg/startup-dir)
-                  ;; Wait for fullscreen frame before creating terminal
-                  (defun cmg/startup-create-terminal (&optional _frame)
-                    (when (and (not (cmg/workspace-sidebar-buffers))
-                               (> (frame-width) (+ cmg/sidebar-width 40)))
-                      (cmg/fit-font-to-frame)
-                      (cmg/create-sidebar-terminal cmg/startup-dir)
-                      (windmove-left)
-                      (remove-hook 'window-size-change-functions #'cmg/startup-create-terminal)))
-                  (if (> (frame-width) (+ cmg/sidebar-width 40))
-                      (cmg/startup-create-terminal)
-                    (add-hook 'window-size-change-functions #'cmg/startup-create-terminal))))))
-          100)
+(defun cmg/doom-after-init-h ()
+  (let* ((last-project (when (file-exists-p cmg/last-project-file)
+                         (string-trim (with-temp-buffer
+                                        (insert-file-contents cmg/last-project-file)
+                                        (buffer-string))))))
+    (setq cmg/startup-dir (if (and last-project
+                                   (file-directory-p last-project)
+                                   (not (string= last-project "~/.config/doom/")))
+                             last-project
+                           "~/.config/doom/"))
+    (setq default-directory cmg/startup-dir)
+    ;; Defer rename + dashboard + terminal until persp-mode is fully initialized
+    (run-with-idle-timer 0.1 nil
+      (lambda ()
+        (when (bound-and-true-p persp-mode)
+          (+workspace-rename "main"
+                             (file-name-nondirectory
+                              (directory-file-name cmg/startup-dir)))
+          (set-persp-parameter '+workspace-project cmg/startup-dir))
+        (cmg/refresh-dashboard cmg/startup-dir)
+        ;; Wait for fullscreen frame before creating terminal
+        (defun cmg/startup-create-terminal (&optional _frame)
+          (when (and (not (cmg/workspace-sidebar-buffers))
+                     (> (frame-width) (+ cmg/sidebar-width 40)))
+            (cmg/fit-font-to-frame)
+            (cmg/create-sidebar-terminal cmg/startup-dir)
+            (windmove-left)
+            (remove-hook 'window-size-change-functions #'cmg/startup-create-terminal)))
+        (if (> (frame-width) (+ cmg/sidebar-width 40))
+            (cmg/startup-create-terminal)
+          (add-hook 'window-size-change-functions #'cmg/startup-create-terminal))))))
+(add-hook 'doom-after-init-hook #'cmg/doom-after-init-h 100)
 
 ;; ——————————————————————————————————————————————————————————————————
 ;; Buffers
@@ -540,7 +539,8 @@ Skips if the current workspace already has sidebar buffers."
                              ;; Last main window showing non-real buffer: show dashboard
                              ((or (cmg/sidebar-buffer-p (current-buffer))
                                   (not (doom-real-buffer-p (current-buffer))))
-                              (switch-to-buffer (doom-fallback-buffer))))))))
+                              (switch-to-buffer (doom-fallback-buffer))
+                              (cmg/enforce-sidebar-width)))))))
 (evil-ex-define-cmd "wq" (lambda ()
                           (interactive)
                           (if (bound-and-true-p with-editor-mode)
@@ -676,15 +676,28 @@ Skips if the current workspace already has sidebar buffers."
   ;; When quitting magit, delete the split rather than showing a duplicate buffer
   (setq magit-bury-buffer-function
         (lambda (window)
-          (quit-window nil window)))
+          (when (window-live-p window)
+            (select-window window)
+            (kill-current-buffer)
+            (cond
+             ((and (not (cmg/last-main-window-p))
+                   (or (not (doom-real-buffer-p (current-buffer)))
+                       (cl-find-if (lambda (w)
+                                     (and (not (eq w (selected-window)))
+                                          (eq (window-buffer w) (current-buffer))))
+                                   (cmg/main-windows))))
+              (delete-window))
+             ((not (doom-real-buffer-p (current-buffer)))
+              (switch-to-buffer (doom-fallback-buffer))
+              (cmg/enforce-sidebar-width))))))
 
   ;; Refresh magit status when saving a buffer (skip when many changes to avoid lag)
-  (add-hook 'after-save-hook
-            (lambda ()
-              (when-let ((buf (magit-get-mode-buffer 'magit-status-mode)))
-                (with-current-buffer buf
-                  (when (< (length (magit-unstaged-files)) 50)
-                    (magit-refresh))))))
+  (defun cmg/after-save-refresh-magit-h ()
+    (when-let ((buf (magit-get-mode-buffer 'magit-status-mode)))
+      (with-current-buffer buf
+        (when (< (length (magit-unstaged-files)) 50)
+          (magit-refresh)))))
+  (add-hook 'after-save-hook #'cmg/after-save-refresh-magit-h)
   ;; Always expand these sections in magit status
   (setq magit-section-initial-visibility-alist
         '((unstaged . show)
@@ -694,16 +707,16 @@ Skips if the current workspace already has sidebar buffers."
           (recent . show)))
   ;; Don't warn about long commit summaries
   (setq git-commit-summary-max-length 100)
-  (add-hook 'git-commit-setup-hook
-            (lambda ()
-              (setq-local display-fill-column-indicator-column (1+ git-commit-summary-max-length))
-              (display-fill-column-indicator-mode 1)
-))
+  (defun cmg/git-commit-setup-h ()
+    (setq-local display-fill-column-indicator-column (1+ git-commit-summary-max-length))
+    (display-fill-column-indicator-mode 1))
+  (add-hook 'git-commit-setup-hook #'cmg/git-commit-setup-h)
   ;; Save all buffers and fetch when opening magit status (not on background refreshes)
-  (add-hook 'magit-status-mode-hook
-            (lambda ()
-              (save-some-buffers t)
-              (magit-fetch-all-prune)))
+  (defun cmg/magit-status-h ()
+    (display-line-numbers-mode -1)
+    (save-some-buffers t)
+    (magit-fetch-all-prune))
+  (add-hook 'magit-status-mode-hook #'cmg/magit-status-h)
   ;; Toggle parent file section from anywhere in a diff
   (evil-define-key* 'normal magit-diff-mode-map
     (kbd "<backtab>") (lambda () (interactive)
@@ -865,7 +878,8 @@ Skips if the current workspace already has sidebar buffers."
       (:prefix ("l" . "llm")
        :desc "Open Claude"  "c" #'cmg/open-claude-sidebar
        :desc "Send Region"  "s" #'cmg/claude-send-region
-       :desc "Fix Error"    "f" #'cmg/claude-fix-error)
+       :desc "Send File"    "f" #'cmg/claude-send-file
+       :desc "Fix Error"    "e" #'cmg/claude-fix-error)
 
       ;; Code
       :desc "LSP Reconnect"            "c R" #'eglot-reconnect
@@ -938,25 +952,26 @@ Skips if the current workspace already has sidebar buffers."
   (treemacs-follow-mode 1)
   (setq treemacs-project-follow-cleanup t)
   ;; Disable soft wrapping in treemacs
-  (add-hook 'treemacs-mode-hook (lambda () (visual-line-mode -1) (setq-local truncate-lines t)))
   (defvar-local cmg/treemacs-hl-cookie nil)
-  (add-hook 'treemacs-mode-hook
-            (lambda ()
-              (setq cmg/treemacs-hl-cookie
-                    (face-remap-add-relative 'hl-line :background (doom-color 'base4)))
-              (display-line-numbers-mode -1)))
-  (add-hook 'window-selection-change-functions
-            (lambda (_)
-              (when-let ((buf (treemacs-get-local-buffer)))
-                (with-current-buffer buf
-                  (when cmg/treemacs-hl-cookie
-                    (face-remap-remove-relative cmg/treemacs-hl-cookie))
-                  (setq cmg/treemacs-hl-cookie
-                        (face-remap-add-relative
-                         'hl-line :background
-                         (if (eq (current-buffer) (window-buffer (selected-window)))
-                             (doom-color 'base4)
-                           (doom-color 'bg))))))))
+  (defun cmg/treemacs-mode-h ()
+    (visual-line-mode -1)
+    (setq-local truncate-lines t)
+    (setq cmg/treemacs-hl-cookie
+          (face-remap-add-relative 'hl-line :background (doom-color 'base4)))
+    (display-line-numbers-mode -1))
+  (add-hook 'treemacs-mode-hook #'cmg/treemacs-mode-h)
+  (defun cmg/treemacs-focus-h (_)
+    (when-let ((buf (treemacs-get-local-buffer)))
+      (with-current-buffer buf
+        (when cmg/treemacs-hl-cookie
+          (face-remap-remove-relative cmg/treemacs-hl-cookie))
+        (setq cmg/treemacs-hl-cookie
+              (face-remap-add-relative
+               'hl-line :background
+               (if (eq (current-buffer) (window-buffer (selected-window)))
+                   (doom-color 'base4)
+                 (doom-color 'bg)))))))
+  (add-hook 'window-selection-change-functions #'cmg/treemacs-focus-h)
   ;; Prevent all forms of q from killing treemacs
   (evil-define-key* '(normal motion) treemacs-mode-map
     "q" #'ignore
@@ -996,11 +1011,11 @@ Skips if the current workspace already has sidebar buffers."
 ;; Sidebar/main window toggle (C-;) and buffer movement (SPC w h/j/k/l)
 (map! :nvig (kbd "C-;") #'cmg/focus-sidebar)
 (defvar cmg/last-main-window nil)
-(add-hook 'window-selection-change-functions
-          (lambda (_)
-            (let ((win (selected-window)))
-              (when (cl-find win (cmg/main-windows))
-                (setq cmg/last-main-window win)))))
+(defun cmg/track-last-main-window-h (_)
+  (let ((win (selected-window)))
+    (when (cl-find win (cmg/main-windows))
+      (setq cmg/last-main-window win))))
+(add-hook 'window-selection-change-functions #'cmg/track-last-main-window-h)
 
 
 
@@ -1212,11 +1227,11 @@ for cell in nb['cells']:
       (kill-buffer (find-buffer-visiting file)))))
 
 (add-to-list 'auto-mode-alist '("\\.ipynb\\'" . fundamental-mode))
-(add-hook 'find-file-hook
-          (lambda ()
-            (when (and buffer-file-name
-                       (string-match-p "\\.ipynb\\'" buffer-file-name))
-              (cmg/view-notebook))))
+(defun cmg/find-file-notebook-h ()
+  (when (and buffer-file-name
+             (string-match-p "\\.ipynb\\'" buffer-file-name))
+    (cmg/view-notebook)))
+(add-hook 'find-file-hook #'cmg/find-file-notebook-h)
 
 ;; ——————————————————————————————————————————————————————————————————
 ;; Markdown
@@ -1290,37 +1305,40 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
 (after! org
   (require 'ob-sql)
   (setq org-table-convert-region-max-lines 10000)
-  (add-hook 'org-mode-hook (lambda () (visual-line-mode -1) (setq truncate-lines t)))
-  (add-hook 'org-babel-after-execute-hook
-            (lambda ()
-              ;; Store full data then truncate for display
-              (save-excursion
-                (when (re-search-forward "#\\+RESULTS:" nil t)
-                  (forward-line 1)
-                  (when (org-at-table-p)
-                    (let* ((tbl (org-table-to-lisp))
-                           (truncated nil))
-                      ;; Store full table for inspector
-                      (setq-local cmg/sql-last-result
-                                  (mapcar (lambda (row)
-                                            (if (listp row)
-                                                (mapcar #'copy-sequence row)
-                                              row))
-                                          tbl))
-                      ;; Truncate for display
-                      (dolist (row tbl)
-                        (when (listp row)
-                          (dotimes (i (length row))
-                            (let ((cell (nth i row)))
-                              (when (and (stringp cell)
-                                         (> (length cell) cmg/sql-max-column-width))
-                                (setf (nth i row)
-                                      (concat (substring cell 0 cmg/sql-max-column-width) "..."))
-                                (setq truncated t))))))
-                      (when truncated
-                        (delete-region (org-table-begin) (org-table-end))
-                        (insert (orgtbl-to-orgtbl tbl nil) "\n"))))))
-              (when (buffer-modified-p) (save-buffer)))))
+  (defun cmg/org-mode-h ()
+    (visual-line-mode -1)
+    (setq truncate-lines t))
+  (add-hook 'org-mode-hook #'cmg/org-mode-h)
+  (defun cmg/org-babel-after-execute-h ()
+    ;; Store full data then truncate for display
+    (save-excursion
+      (when (re-search-forward "#\\+RESULTS:" nil t)
+        (forward-line 1)
+        (when (org-at-table-p)
+          (let* ((tbl (org-table-to-lisp))
+                 (truncated nil))
+            ;; Store full table for inspector
+            (setq-local cmg/sql-last-result
+                        (mapcar (lambda (row)
+                                  (if (listp row)
+                                      (mapcar #'copy-sequence row)
+                                    row))
+                                tbl))
+            ;; Truncate for display
+            (dolist (row tbl)
+              (when (listp row)
+                (dotimes (i (length row))
+                  (let ((cell (nth i row)))
+                    (when (and (stringp cell)
+                               (> (length cell) cmg/sql-max-column-width))
+                      (setf (nth i row)
+                            (concat (substring cell 0 cmg/sql-max-column-width) "..."))
+                      (setq truncated t))))))
+            (when truncated
+              (delete-region (org-table-begin) (org-table-end))
+              (insert (orgtbl-to-orgtbl tbl nil) "\n"))))))
+    (when (buffer-modified-p) (save-buffer)))
+  (add-hook 'org-babel-after-execute-hook #'cmg/org-babel-after-execute-h))
 
 ;; Sanitize SQL output: join broken lines and escape pipes in data
 (defvar cmg/sql-sanitize-output nil)
@@ -1572,6 +1590,20 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
                 (forward-line 1))
               (list file start-line (+ start-line (max 0 (1- selected-lines)))))))))))
 
+(defun cmg/claude-send (text)
+  "Send TEXT to the Claude terminal and focus it. Opens Claude if not running."
+  (let ((buf (get-buffer (cmg/terminal-buffer-name "Claude"))))
+    (unless buf
+      (cmg/open-claude-sidebar)
+      (setq buf (get-buffer (cmg/terminal-buffer-name "Claude"))))
+    (when buf
+      (with-current-buffer buf
+        (vterm-send-string text))
+      (let ((win (get-buffer-window buf)))
+        (if win
+            (select-window win)
+          (cmg/open-claude-sidebar))))))
+
 (defun cmg/claude-send-region (beg end)
   "Send a file reference (@filepath:lines) for the selected region or current line to Claude."
   (interactive
@@ -1589,32 +1621,34 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
          (end-line (if diff-info (nth 2 diff-info)
                     (save-excursion
                       (goto-char end)
-                      (if (bolp) (1- (line-number-at-pos)) (line-number-at-pos)))))
-         (ref (if (= start-line end-line)
-                  (format "@%s:%d" rel-file start-line)
-                (format "@%s:%d-%d" rel-file start-line end-line)))
-         (buf (get-buffer (cmg/terminal-buffer-name "Claude"))))
-    (if buf
-        (progn
-          (with-current-buffer buf
-            (vterm-send-string (concat ref " ")))
-          (let ((win (get-buffer-window buf)))
-            (if win
-                (select-window win)
-              (cmg/open-claude-sidebar))))
-      (message "Claude not found! Run 'SPC l c' first."))))
+                      (if (bolp) (1- (line-number-at-pos)) (line-number-at-pos))))))
+    (cmg/claude-send (if (= start-line end-line)
+                         (format "@%s:%d " rel-file start-line)
+                       (format "@%s:%d-%d " rel-file start-line end-line)))))
 
+(defun cmg/claude-send-file ()
+  "Send the current file path as @filepath to Claude and switch to it."
+  (interactive)
+  (let* ((project-root (or (projectile-project-root) default-directory))
+         (rel-file (if (buffer-file-name)
+                       (file-relative-name (buffer-file-name) project-root)
+                     (buffer-name))))
+    (cmg/claude-send (format "@%s " rel-file))))
 
 (defun cmg/claude-fix-error ()
   "Grab the Flycheck error at point and ask Claude to fix it."
   (interactive)
   (let ((errs (flycheck-overlay-errors-at (point))))
     (if errs
-        (let ((msg (flycheck-error-message (car errs))))
-          (cmg/claude-send-region (point) (point)) ; Just to trigger focus
-          (with-current-buffer (cmg/terminal-buffer-name "Claude")
-            (vterm-send-string (format "I'm getting this error: '%s'. How do I fix it?" msg))
-            (vterm-send-return)))
+        (let* ((msg (flycheck-error-message (car errs)))
+               (project-root (or (projectile-project-root) default-directory))
+               (rel-file (if (buffer-file-name)
+                             (file-relative-name (buffer-file-name) project-root)
+                           (buffer-name)))
+               (line (line-number-at-pos)))
+          (cmg/claude-send
+           (format "@%s:%d I'm getting this error: '%s'. How do I fix it?\n"
+                   rel-file line msg)))
       (message "No Flycheck error found here!"))))
 
 
@@ -1737,13 +1771,13 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
                        (if (cmg/sidebar-window-p (selected-window))
                            t
                          (not (cmg/sidebar-buffer-p buf)))))
-(add-hook 'after-make-frame-functions
-          (lambda (frame)
-            (set-frame-parameter frame 'buffer-predicate
-                                 (lambda (buf)
-                                   (if (cmg/sidebar-window-p (selected-window))
-                                       t
-                                     (not (cmg/sidebar-buffer-p buf)))))))
+(defun cmg/set-frame-buffer-predicate-h (frame)
+  (set-frame-parameter frame 'buffer-predicate
+                       (lambda (buf)
+                         (if (cmg/sidebar-window-p (selected-window))
+                             t
+                           (not (cmg/sidebar-buffer-p buf))))))
+(add-hook 'after-make-frame-functions #'cmg/set-frame-buffer-predicate-h)
 
 ;; Force sidebar buffers to only display in sidebar windows
 (defun cmg/display-in-sidebar (buf alist)
@@ -1762,7 +1796,8 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
   (dolist (win (window-list))
     (when (cmg/sidebar-window-p win)
       (set-window-dedicated-p win t))))
-(add-hook 'window-buffer-change-functions (lambda (_) (cmg/maybe-dedicate-sidebar-window)))
+(defun cmg/window-buffer-change-h (_) (cmg/maybe-dedicate-sidebar-window))
+(add-hook 'window-buffer-change-functions #'cmg/window-buffer-change-h)
 
 ;; ——————————————————————————————————————————————————————————————————
 ;; Deadgrep
@@ -1791,31 +1826,28 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
             (set-window-dedicated-p win t))))
 
   ;; Never prompt about deadgrep processes on exit
-  (advice-add 'deadgrep--start :after
-              (lambda (&rest _)
-                (when-let ((proc (get-buffer-process (current-buffer))))
-                  (set-process-query-on-exit-flag proc nil))))
+  (defun cmg/deadgrep-no-exit-prompt-a (&rest _)
+    (when-let ((proc (get-buffer-process (current-buffer))))
+      (set-process-query-on-exit-flag proc nil)))
+  (advice-add 'deadgrep--start :after #'cmg/deadgrep-no-exit-prompt-a)
 
-  (add-hook 'deadgrep-mode-hook
-            (lambda ()
-              (cmg/sidebar-mode 1)
-              ;; Don't prompt when killing deadgrep buffers
-              (add-hook 'kill-buffer-query-functions
-                        (lambda ()
-                          (when-let ((proc (get-buffer-process (current-buffer))))
-                            (set-process-query-on-exit-flag proc nil))
-                          t)
-                        nil t)
-              (setq tab-line-format '(:eval (cmg/get-terminal-tabs)))
-              (setq header-line-format " ")
-              (doom-modeline-set-modeline 'deadgrep)
-              (face-remap-add-relative 'header-line
-                                       :background (doom-color 'bg)
-                                       :box nil :overline nil :underline nil
-                                       :height 0.3)
-              (face-remap-add-relative 'tab-line :background (doom-color 'bg))))
+  (defun cmg/deadgrep-mode-h ()
+    (cmg/sidebar-mode 1)
+    ;; Don't prompt when killing deadgrep buffers
+    (when-let ((proc (get-buffer-process (current-buffer))))
+      (set-process-query-on-exit-flag proc nil))
+    (setq tab-line-format '(:eval (cmg/get-terminal-tabs)))
+    (setq header-line-format " ")
+    (doom-modeline-set-modeline 'deadgrep)
+    (face-remap-add-relative 'header-line
+                             :background (doom-color 'bg)
+                             :box nil :overline nil :underline nil
+                             :height 0.3)
+    (face-remap-add-relative 'tab-line :background (doom-color 'bg)))
+  (add-hook 'deadgrep-mode-hook #'cmg/deadgrep-mode-h)
 
-  (add-hook 'deadgrep-mode-hook (lambda () (evil-snipe-local-mode -1)))
+  (defun cmg/deadgrep-disable-snipe-h () (evil-snipe-local-mode -1))
+  (add-hook 'deadgrep-mode-hook #'cmg/deadgrep-disable-snipe-h)
   (evil-define-key* 'normal deadgrep-mode-map
     "q" #'ignore
     "/" #'deadgrep-search-term
@@ -2129,31 +2161,29 @@ lines that were split by terminal overflow (1-space indent after dedent)."
   (define-key vterm-mode-map (kbd "C-z") #'vterm-send-C-z)
 
   ;; Normal mode = copy mode (navigate text), insert mode = terminal input
-  (add-hook 'vterm-mode-hook
-            (lambda ()
-              (add-hook 'evil-normal-state-entry-hook
-                        (lambda () (when (derived-mode-p 'vterm-mode)
-                                     (vterm-copy-mode 1)))
-                        nil t)
-              (add-hook 'evil-insert-state-entry-hook
-                        (lambda () (when (derived-mode-p 'vterm-mode)
-                                     (vterm-copy-mode -1)))
-                        nil t)))
+  (defun cmg/vterm-evil-normal-h ()
+    (when (derived-mode-p 'vterm-mode) (vterm-copy-mode 1)))
+  (defun cmg/vterm-evil-insert-h ()
+    (when (derived-mode-p 'vterm-mode) (vterm-copy-mode -1)))
+  (defun cmg/vterm-evil-state-setup-h ()
+    (add-hook 'evil-normal-state-entry-hook #'cmg/vterm-evil-normal-h nil t)
+    (add-hook 'evil-insert-state-entry-hook #'cmg/vterm-evil-insert-h nil t))
+  (add-hook 'vterm-mode-hook #'cmg/vterm-evil-state-setup-h)
 
   ;; When leaving vterm: exit copy-mode so output flows
   ;; When entering vterm: switch to insert mode
-  (add-hook 'window-selection-change-functions
-            (lambda (_)
-              ;; Unfreeze non-selected vterm windows
-              (dolist (win (window-list))
-                (with-current-buffer (window-buffer win)
-                  (when (and (derived-mode-p 'vterm-mode)
-                             vterm-copy-mode
-                             (not (eq win (selected-window))))
-                    (vterm-copy-mode -1))))
-              ;; Enter insert mode when arriving at a vterm
-              (when (derived-mode-p 'vterm-mode)
-                (evil-insert-state)))))
+  (defun cmg/vterm-window-selection-h (_)
+    ;; Unfreeze non-selected vterm windows
+    (dolist (win (window-list))
+      (with-current-buffer (window-buffer win)
+        (when (and (derived-mode-p 'vterm-mode)
+                   vterm-copy-mode
+                   (not (eq win (selected-window))))
+          (vterm-copy-mode -1))))
+    ;; Enter insert mode when arriving at a vterm
+    (when (derived-mode-p 'vterm-mode)
+      (evil-insert-state)))
+  (add-hook 'window-selection-change-functions #'cmg/vterm-window-selection-h))
 
 (defun cmg/get-terminal-tabs ()
   "Return a propertized string of all sidebar buffers styled as tabs."
@@ -2180,37 +2210,34 @@ lines that were split by terminal overflow (1-space indent after dedent)."
                                    map))))
       sorted-terms " "))))
 
-(add-hook 'vterm-mode-hook
-          (lambda ()
-            ;; Keybindings for all vterms (C-h, C-l, C-t, etc.)
-            (cmg/sidebar-mode 1)
-            ;; Sidebar-only visual settings
-            (when (cmg/sidebar-buffer-p (current-buffer))
-              (setq tab-line-format '(:eval (cmg/get-terminal-tabs)))
-              (setq header-line-format " ")
-              (face-remap-add-relative 'header-line
-                                       :background (doom-color 'bg)
-                                       :box nil :overline nil :underline nil
-                                       :height 0.3)
-              (face-remap-add-relative 'tab-line :background (doom-color 'bg))
-              (face-remap-add-relative 'hl-line :background (doom-color 'bg))
-              (set-window-fringes (selected-window) 15 0))
-
-            ;; Universal vterm settings
-            (doom-modeline-set-modeline 'vterm)
-            (let ((dt (make-display-table)))
-              (aset dt 160 [32])
-              (aset dt 9210 [?●])
-              (setq-local buffer-display-table dt))
-            (display-line-numbers-mode -1)
-            (set-process-query-on-exit-flag (get-buffer-process (current-buffer)) nil)
-            (setq-local cursor-in-non-selected-windows nil)
-            ;; Hide Emacs cursor in Claude buffers in insert mode only —
-            ;; TUI renders its own cursor. Show cursor in normal/visual for navigation.
-            (when (string-match-p ":Claude$" (buffer-name))
-              (setq-local evil-insert-state-cursor '(nil nil))
-              (setq-local cursor-type nil))
-))
+(defun cmg/vterm-mode-h ()
+  ;; Keybindings for all vterms (C-h, C-l, C-t, etc.)
+  (cmg/sidebar-mode 1)
+  ;; Sidebar-only visual settings
+  (when (cmg/sidebar-buffer-p (current-buffer))
+    (setq tab-line-format '(:eval (cmg/get-terminal-tabs)))
+    (setq header-line-format " ")
+    (face-remap-add-relative 'header-line
+                             :background (doom-color 'bg)
+                             :box nil :overline nil :underline nil
+                             :height 0.3)
+    (face-remap-add-relative 'tab-line :background (doom-color 'bg))
+    (face-remap-add-relative 'hl-line :background (doom-color 'bg))
+    (set-window-fringes (selected-window) 15 0))
+  ;; Universal vterm settings
+  (doom-modeline-set-modeline 'vterm)
+  (let ((dt (make-display-table)))
+    (aset dt 160 [32])
+    (aset dt 9210 [?●])
+    (setq-local buffer-display-table dt))
+  (display-line-numbers-mode -1)
+  (set-process-query-on-exit-flag (get-buffer-process (current-buffer)) nil)
+  (setq-local cursor-in-non-selected-windows nil)
+  ;; Hide Emacs cursor in Claude buffers in insert mode only
+  (when (string-match-p ":Claude$" (buffer-name))
+    (setq-local evil-insert-state-cursor '(nil nil))
+    (setq-local cursor-type nil)))
+(add-hook 'vterm-mode-hook #'cmg/vterm-mode-h)
 
 ;; Start vterms with a clean environment — like a fresh terminal, not inheriting Emacs state
 (defadvice! cmg/vterm-clean-env-a (orig-fn &rest args)
@@ -2239,7 +2266,8 @@ lines that were split by terminal overflow (1-space indent after dedent)."
         (when (derived-mode-p 'vterm-mode)
           (setq cmg/vterm-focused (eq (current-buffer) focused-buf))
           (force-mode-line-update))))))
-(add-hook 'window-selection-change-functions (lambda (_) (cmg/update-vterm-focus)))
+(defun cmg/vterm-focus-h (_) (cmg/update-vterm-focus))
+(add-hook 'window-selection-change-functions #'cmg/vterm-focus-h)
 (add-hook 'evil-normal-state-entry-hook #'cmg/update-vterm-focus)
 (add-hook 'evil-insert-state-entry-hook #'cmg/update-vterm-focus)
 (add-hook 'evil-visual-state-entry-hook #'cmg/update-vterm-focus)
@@ -2262,18 +2290,19 @@ lines that were split by terminal overflow (1-space indent after dedent)."
                    (set-window-dedicated-p win nil)))))
 (add-hook 'vterm-exit-hook #'cmg/reindex-terminals)
 ;; Also catch if the buffer is killed manually without the process exiting
-(add-hook 'kill-buffer-hook (lambda ()
-                              (when (cmg/sidebar-buffer-p (current-buffer))
-                                (let* ((win (get-buffer-window (current-buffer)))
-                                       (remaining (cl-remove (current-buffer)
-                                                             (cmg/workspace-sidebar-buffers))))
-                                  (when win
-                                    (if remaining
-                                        (set-window-buffer win (car remaining))
-                                      (run-at-time "0.01 sec" nil
-                                                   (lambda () (when (window-live-p win)
-                                                                (delete-window win)))))))
-                                (run-at-time "0.1 sec" nil #'cmg/reindex-terminals))))
+(defun cmg/kill-buffer-sidebar-h ()
+  (when (cmg/sidebar-buffer-p (current-buffer))
+    (let* ((win (get-buffer-window (current-buffer)))
+           (remaining (cl-remove (current-buffer)
+                                 (cmg/workspace-sidebar-buffers))))
+      (when win
+        (if remaining
+            (set-window-buffer win (car remaining))
+          (run-at-time "0.01 sec" nil
+                       (lambda () (when (window-live-p win)
+                                    (delete-window win)))))))
+    (run-at-time "0.1 sec" nil #'cmg/reindex-terminals)))
+(add-hook 'kill-buffer-hook #'cmg/kill-buffer-sidebar-h)
 
 ;; ——————————————————————————————————————————————————————————————————
 ;; Top Bar
@@ -2500,26 +2529,26 @@ lines that were split by terminal overflow (1-space indent after dedent)."
             ignore)
     (stats menu-item ,cmg/tab-bar-stats-cache ignore))))
 
-(add-hook 'doom-after-init-hook
-          (lambda ()
-            (setq tab-bar-show t)
-            (setq tab-bar-format '(cmg/tab-bar-stats))
-            (tab-bar-mode 1)
-            ;; Add vertical padding to tab-bar
-            (let ((bg (doom-color 'bg-alt)))
-              (dolist (face '(tab-bar tab-bar-tab tab-bar-tab-inactive))
-                (set-face-attribute face nil :box `(:line-width 4 :color ,bg))))
-            (run-with-timer 1 1 #'cmg/update-tab-bar-stats)
-            (run-with-timer 0.5 60 #'cmg/update-next-event)
-            ;; Visual cue when Emacs is unfocused: orange window dividers + tab-bar underline
-            (add-function :after after-focus-change-function
-                          (lambda ()
-                            (let ((color (if (frame-focus-state)
-                                            (doom-color 'base8)
-                                          (doom-color 'orange))))
-                              (set-face-foreground 'window-divider color)
-                              (set-face-foreground 'window-divider-first-pixel color)
-                              (set-face-foreground 'window-divider-last-pixel color)
-                              (set-face-attribute 'tab-bar nil
-                                                  :underline `(:color ,color :position -1))))))
-          100)
+(defun cmg/focus-change-indicator ()
+  (let ((color (if (frame-focus-state)
+                  (doom-color 'base8)
+                (doom-color 'orange))))
+    (set-face-foreground 'window-divider color)
+    (set-face-foreground 'window-divider-first-pixel color)
+    (set-face-foreground 'window-divider-last-pixel color)
+    (set-face-attribute 'tab-bar nil
+                        :underline `(:color ,color :position -1))))
+
+(defun cmg/tab-bar-init-h ()
+  (setq tab-bar-show t)
+  (setq tab-bar-format '(cmg/tab-bar-stats))
+  (tab-bar-mode 1)
+  ;; Add vertical padding to tab-bar
+  (let ((bg (doom-color 'bg-alt)))
+    (dolist (face '(tab-bar tab-bar-tab tab-bar-tab-inactive))
+      (set-face-attribute face nil :box `(:line-width 4 :color ,bg))))
+  (run-with-timer 1 1 #'cmg/update-tab-bar-stats)
+  (run-with-timer 0.5 60 #'cmg/update-next-event)
+  ;; Visual cue when Emacs is unfocused: orange window dividers + tab-bar underline
+  (add-function :after after-focus-change-function #'cmg/focus-change-indicator))
+(add-hook 'doom-after-init-hook #'cmg/tab-bar-init-h 100)
