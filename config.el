@@ -776,6 +776,7 @@ Skips if the current workspace already has sidebar buffers."
 ;; ——————————————————————————————————————————————————————————————————
 (after! doom-modeline
   (setq doom-modeline-env-version nil)  ; hide pyenv version from major-mode segment
+  (setq doom-modeline-buffer-file-name-style 'relative-to-project)
   ;; Hide checker segment when no checker is active
   (advice-add 'doom-modeline-update-flycheck :after
               (lambda (&optional status &rest _)
