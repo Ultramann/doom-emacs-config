@@ -35,7 +35,7 @@
       (write-region "" nil (expand-file-name ".projectile" dir) nil 'silent))
     (apply orig-fn args)))
 
-(defvar cmg/sidebar-width 90
+(defvar cmg/sidebar-width 100
   "The default width for all sidebar windows (Terminals, Claude, etc).")
 ;; Declare dynamic var for lexical-binding compatibility
 (defvar vterm-shell)
@@ -252,7 +252,8 @@ PROJECT-DIR overrides the terminal's working directory."
   (define-key vertico-map (kbd "S-<return>")
               (lambda () (interactive)
                 (setq cmg/open-in-other-window t)
-                (vertico-exit))))
+                (vertico-exit)))
+  (define-key vertico-map (kbd "C-<return>") #'vertico-exit))
 
 (defadvice! +open-in-other-window-a (fn file &rest args)
   :around #'find-file
@@ -1101,6 +1102,21 @@ If only one main window exists, create a split in that direction first."
     (when-let ((win (cmg/sidebar-top-window)))
       (select-window win))))
 
+;; Silence workspace echo-area messages (we have workspaces in the top bar)
+(advice-add '+workspace/display :override #'ignore)
+(advice-add '+workspace-message :override #'ignore)
+
+(defun cmg/workspace-switch-to ()
+  "Switch workspace with the last workspace preselected."
+  (interactive)
+  (let* ((current (+workspace-current-name))
+         (names (cl-remove current (+workspace-list-names) :test #'string=))
+         (last (ignore-errors (+workspace-other-name)))
+         (default (when (and last (member last names)) last)))
+    (+workspace/switch-to
+     (completing-read "Switch to workspace: " names nil t nil nil default))))
+(map! :nvig (kbd "C-<return>") #'cmg/workspace-switch-to)
+
 ;; Visual line movement and remappings
 (map! :nm "j" #'evil-next-visual-line)
 (map! :nm "k" #'evil-previous-visual-line)
@@ -1739,6 +1755,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
 
 (evil-define-key* '(normal insert visual) cmg/sidebar-mode-map
   (kbd "C-c") (lambda () (interactive) (vterm-send-key "c" nil nil t))
+  (kbd "C-x") (lambda () (interactive) (vterm-send-key "x" nil nil t))
   (kbd "C-t") #'cmg/open-new-sidebar-terminal
   (kbd "C-s") #'cmg/split-sidebar-bottom
   (kbd "C-m") #'cmg/sidebar-toggle-maximize
@@ -2281,13 +2298,18 @@ lines that were split by terminal overflow (1-space indent after dedent)."
     (find-file file)))
 (after! vterm
   (add-to-list 'vterm-eval-cmds '("find-file" cmg/vterm-find-file)))
-;; Undedicate window before vterm kills the buffer on exit
+;; Undedicate window before vterm kills the buffer on exit; close bottom split
+(defun cmg/vterm-exit-cleanup (buf _event)
+  (when-let ((win (and (buffer-live-p buf)
+                        (get-buffer-window buf))))
+    (set-window-dedicated-p win nil)
+    ;; Close the bottom split if this is the bottom terminal
+    (when (buffer-local-value 'cmg/bottom-terminal buf)
+      (setq cmg/sidebar-saved-top-height nil)
+      (run-at-time "0.01 sec" nil
+                   (lambda () (when (window-live-p win) (delete-window win)))))))
 (after! vterm
-  (add-to-list 'vterm-exit-functions
-               (lambda (buf _event)
-                 (when-let ((win (and (buffer-live-p buf)
-                                      (get-buffer-window buf))))
-                   (set-window-dedicated-p win nil)))))
+  (add-to-list 'vterm-exit-functions #'cmg/vterm-exit-cleanup))
 (add-hook 'vterm-exit-hook #'cmg/reindex-terminals)
 ;; Also catch if the buffer is killed manually without the process exiting
 (defun cmg/kill-buffer-sidebar-h ()
@@ -2501,33 +2523,97 @@ lines that were split by terminal overflow (1-space indent after dedent)."
                                 'face `(:foreground ,(doom-color 'base7)))))))
   (force-mode-line-update t)))
 
-(defun cmg/tab-bar-stats ()
-  "Return system stats for tab bar display."
+;; Claude Code state detection via terminal title.
+;; Claude Code sets the terminal title while working (spinner chars: ⠐ ⠂ etc.)
+;; and sends "✳ <task description>" when done/waiting for input.
+;; To debug title changes if this breaks in the future, run:
+;;   SPC ; (advice-add 'vterm--set-title :before
+;;           (lambda (title) (message "VTERM TITLE: %s" title))
+;;           '((name . cmg/log-title)))
+;; Then use Claude and check *Messages* for title patterns.
+;; Remove with: (advice-remove 'vterm--set-title 'cmg/log-title)
+
+(defvar cmg/claude-last-title (make-hash-table :test 'equal)
+  "Hash table of Claude buffer name → last terminal title.")
+
+(defadvice! cmg/claude-track-title-a (title)
+  "Track the last title for Claude buffers."
+  :before #'vterm--set-title
+  (when (string-match-p ":Claude$" (buffer-name))
+    (puthash (buffer-name) title cmg/claude-last-title)))
+
+(defun cmg/claude-waiting-p (workspace-name)
+  "Return non-nil if the Claude buffer in WORKSPACE-NAME is waiting for input."
+  (let* ((buf-name (format "%s:Claude" workspace-name))
+         (last-title (gethash buf-name cmg/claude-last-title)))
+    (and (get-buffer buf-name)
+         last-title
+         (string-prefix-p "✳" last-title))))
+
+(defun cmg/tab-bar-workspaces ()
+  "Return propertized workspace list for the tab bar."
+  (let* ((current (+workspace-current-name))
+         (names (when (bound-and-true-p persp-mode)
+                  (+workspace-list-names)))
+         (default-color (doom-color 'base7))
+         (waiting-color (doom-color 'yellow))
+         (pipe (propertize "|" 'face `(:foreground ,default-color))))
+    (if (null names) ""
+      (concat
+       pipe
+       (mapconcat
+        (lambda (name)
+          (let ((name-color (if (cmg/claude-waiting-p name) waiting-color default-color)))
+            (if (string= name current)
+                (concat (propertize "•" 'face `(:foreground ,default-color))
+                        (propertize name 'face `(:foreground ,name-color :weight bold))
+                        (propertize "•" 'face `(:foreground ,default-color)))
+              (concat " " (propertize name 'face `(:foreground ,name-color)) " "))))
+        names pipe)
+       pipe))))
+
+(defun cmg/tab-bar-save-icon ()
+  "Return save icon: clean or modified, colored by unsaved buffer state."
   (let* ((unsaved-bufs (cl-remove-if-not
                         (lambda (b) (and (buffer-file-name b) (buffer-modified-p b)))
-                        (buffer-list)))
-          (unsaved (length unsaved-bufs))
-          (unsaved-item (when (> unsaved 0)
-                          (let* ((names (mapconcat
-                                         (lambda (b) (file-name-nondirectory (buffer-file-name b)))
-                                         unsaved-bufs ", "))
-                                 (label (concat "  " (propertize (format " %d " unsaved)
-                                                                  'face (list :foreground (doom-color 'yellow))
-))))
-                            (list (list 'unsaved 'menu-item label 'ignore
-                                      :help (format "Unsaved buffers: %s" names)))))))
-  `((pad menu-item ,(propertize " " 'face `(:box (:line-width (2 . 2) :color ,(doom-color 'bg-alt)))) ignore)
-    ,@unsaved-item
-    (branch menu-item ,cmg/tab-bar-branch-cache ignore)
-    (cal-spacer menu-item "   " ignore)
-    (event menu-item
-           ,(if (string-empty-p cmg/next-event-cache) ""
-              cmg/next-event-cache)
-           ignore)
-    (spacer menu-item
-            ,(propertize " " 'display '(space :align-to (- right 66)))
-            ignore)
-    (stats menu-item ,cmg/tab-bar-stats-cache ignore))))
+                        (if (bound-and-true-p persp-mode)
+                            (persp-buffer-list)
+                          (buffer-list))))
+         (has-unsaved (> (length unsaved-bufs) 0))
+         (icon (if has-unsaved "\xf0cfb" "\xf0193"))
+         (face (if has-unsaved
+                   `(:foreground ,(doom-color 'yellow))
+                 `(:foreground ,(doom-color 'base7)))))
+    (propertize icon 'face face
+                'help-echo (if has-unsaved
+                               (format "Unsaved: %s"
+                                       (mapconcat (lambda (b) (file-name-nondirectory (buffer-file-name b)))
+                                                  unsaved-bufs ", "))
+                             "All saved"))))
+
+(defun cmg/tab-bar-stats ()
+  "Return tab bar display with workspaces, calendar, branch, and stats."
+  (let* ((stats-width (string-width cmg/tab-bar-stats-cache))
+         (branch-width (+ (string-width cmg/tab-bar-branch-cache) 5)))
+    `((pad menu-item ,(propertize " " 'face `(:box (:line-width (2 . 2) :color ,(doom-color 'bg-alt)))) ignore)
+      (workspaces menu-item ,(cmg/tab-bar-workspaces) ignore)
+      (cal-spacer menu-item "   " ignore)
+      (event menu-item
+             ,(if (string-empty-p cmg/next-event-cache) ""
+                cmg/next-event-cache)
+             ignore)
+      ;; Align branch to left edge of sidebar area
+      (spacer menu-item
+              ,(propertize " " 'display `(space :align-to (- right ,(+ cmg/sidebar-width branch-width))))
+              ignore)
+      (branch menu-item ,cmg/tab-bar-branch-cache ignore)
+      (save-spacer menu-item "  " ignore)
+      (save-icon menu-item ,(cmg/tab-bar-save-icon) ignore)
+      ;; Align stats to right edge (dynamic gap fills sidebar width)
+      (stats-spacer menu-item
+                    ,(propertize " " 'display `(space :align-to (- right ,stats-width)))
+                    ignore)
+      (stats menu-item ,cmg/tab-bar-stats-cache ignore))))
 
 (defun cmg/focus-change-indicator ()
   (let ((color (if (frame-focus-state)
