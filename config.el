@@ -379,6 +379,11 @@ Skips if the current workspace already has sidebar buffers."
 ;; ——————————————————————————————————————————————————————————————————
 
 (after! persp-mode
+  ;; WORKAROUND (2026-07-08): reload workspace autoloads after persp-mode's
+  ;; cl-defstruct defines setf accessors. Doom froze persp-mode at an old version
+  ;; but workspace code references new API. See doomemacs/core#8454.
+  ;; Remove this and test SPC p p after future doom upgrades.
+  (load (expand-file-name "sources/doom+/modules/ui/workspaces/autoload/workspaces.el" doom-emacs-dir) nil t)
   (setq +workspaces-switch-project-function #'cmg/project-layout)
   ;; Undedicate all windows before killing workspace to prevent errors
   (advice-add 'persp-kill :before
@@ -509,16 +514,22 @@ Skips if the current workspace already has sidebar buffers."
                            ;; Bottom terminal: kill buffer and delete the split
                            ((bound-and-true-p cmg/bottom-terminal)
                             (let ((buf (current-buffer))
-                                  (win (selected-window)))
+                                  (win (selected-window))
+                                  (top (cmg/sidebar-top-window)))
                               (set-window-dedicated-p win nil)
                               (setq cmg/sidebar-saved-top-height nil)
                               (delete-window win)
-                              (kill-buffer buf)))
+                              (kill-buffer buf)
+                              (when (and top (window-live-p top))
+                                (select-window top))))
                            ;; Sidebar buffer: kill and switch to next sidebar tab
                            ((cmg/sidebar-buffer-p (current-buffer))
                             (let ((buf (current-buffer))
                                   (others (remove (current-buffer) (cmg/workspace-sidebar-buffers))))
                               (set-window-dedicated-p (selected-window) nil)
+                              (when-let ((proc (get-buffer-process buf)))
+                                (set-process-query-on-exit-flag proc nil)
+                                (delete-process proc))
                               (if others
                                   (progn
                                     (switch-to-buffer (car others))
@@ -2173,7 +2184,7 @@ lines that were split by terminal overflow (1-space indent after dedent)."
   ;; 3. THE SHELL SIGNALS (Raw Passthrough)
   ;; We do NOT put these in exceptions because we want vterm to
   ;; use its internal functions to send them to the shell process.
-  (define-key vterm-mode-map (kbd "C-c") #'vterm-send-C-c)
+  (define-key vterm-mode-map (kbd "C-c") (lambda () (interactive) (vterm-send-key "c" nil nil t)))
   (define-key vterm-mode-map (kbd "C-g") (lambda () (interactive) (vterm-send-key "<escape>")))
   (define-key vterm-mode-map (kbd "C-d") #'vterm-send-C-d)
   (define-key vterm-mode-map (kbd "C-z") #'vterm-send-C-z)
@@ -2304,11 +2315,14 @@ lines that were split by terminal overflow (1-space indent after dedent)."
   (when-let ((win (and (buffer-live-p buf)
                         (get-buffer-window buf))))
     (set-window-dedicated-p win nil)
-    ;; Close the bottom split if this is the bottom terminal
+    ;; Close the bottom split if this is the bottom terminal, focus top sidebar
     (when (buffer-local-value 'cmg/bottom-terminal buf)
       (setq cmg/sidebar-saved-top-height nil)
-      (run-at-time "0.01 sec" nil
-                   (lambda () (when (window-live-p win) (delete-window win)))))))
+      (let ((top (cmg/sidebar-top-window)))
+        (run-at-time "0.01 sec" nil
+                     (lambda ()
+                       (when (window-live-p win) (delete-window win))
+                       (when (and top (window-live-p top)) (select-window top))))))))
 (after! vterm
   (add-to-list 'vterm-exit-functions #'cmg/vterm-exit-cleanup))
 (add-hook 'vterm-exit-hook #'cmg/reindex-terminals)
