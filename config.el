@@ -744,6 +744,14 @@ Skips if the current workspace already has sidebar buffers."
         :nvm "C-j" #'evil-window-down
         :nvm "C-k" #'evil-window-up
         :nvm "C-l" #'evil-window-right)
+  ;; C-<return> always switches workspace, even in magit. Magit binds it in
+  ;; magit-mode-map (magit-visit-thing) and in the higher-precedence section
+  ;; maps (applied as `keymap' text properties on each section), which shadow
+  ;; the global binding — override it in each map magit uses for C-<return>.
+  (define-key magit-mode-map (kbd "C-<return>") #'cmg/workspace-switch-to)
+  (define-key magit-diff-section-map (kbd "C-<return>") #'cmg/workspace-switch-to)
+  (after! magit-submodule
+    (define-key magit-module-section-map (kbd "C-<return>") #'cmg/workspace-switch-to))
   ;; RET: visit the file in the other window when point is on a diff/file section;
   ;; otherwise run the section's default action (fixes "Cannot determine file to
   ;; visit" when RET is pressed on headers, commits, untracked sections, etc.).
@@ -1118,15 +1126,49 @@ If only one main window exists, create a split in that direction first."
 (advice-add '+workspace/display :override #'ignore)
 (advice-add '+workspace-message :override #'ignore)
 
+(defun cmg/workspace-branch (ws-name)
+  "Return the current git branch for workspace WS-NAME's project, or nil."
+  (let* ((persp (+workspace-get ws-name t))
+         (root (and persp (persp-parameter '+workspace-project persp))))
+    (when (and root (file-directory-p root))
+      (let ((branch (string-trim
+                     (shell-command-to-string
+                      (format "git -C %s rev-parse --abbrev-ref HEAD 2>/dev/null"
+                              (shell-quote-argument root))))))
+        (unless (string-empty-p branch) branch)))))
+
 (defun cmg/workspace-switch-to ()
-  "Switch workspace with the last workspace preselected."
+  "Switch workspace with the last workspace preselected.
+Each candidate is annotated with the git branch of its project."
   (interactive)
   (let* ((current (+workspace-current-name))
          (names (cl-remove current (+workspace-list-names) :test #'string=))
          (last (ignore-errors (+workspace-other-name)))
-         (default (when (and last (member last names)) last)))
+         (default (when (and last (member last names)) last))
+         ;; Compute branches once here, not per keystroke, to avoid repeated git
+         ;; calls while filtering candidates in the minibuffer.
+         (branches (mapcar (lambda (n) (cons n (cmg/workspace-branch n))) names))
+         ;; Pad each name up to the widest so the dot and branch align in columns.
+         (maxlen (apply #'max 0 (mapcar #'string-width names)))
+         (annotate (lambda (n)
+                     (let ((branch (cdr (assoc n branches)))
+                           (waiting (cmg/claude-waiting-p n))
+                           (pad (make-string (- maxlen (string-width n)) ?\s)))
+                       (concat
+                        pad "  "
+                        (if waiting
+                            (propertize "●" 'face `(:foreground ,(doom-color 'red)))
+                          " ")
+                        (if branch
+                            (propertize (format " %s" branch)
+                                        'face `(:foreground ,(doom-color 'bright-blue)))
+                          "")))))
+         (collection (lambda (str pred action)
+                       (if (eq action 'metadata)
+                           `(metadata (annotation-function . ,annotate))
+                         (complete-with-action action names str pred)))))
     (+workspace/switch-to
-     (completing-read "Switch to workspace: " names nil t nil nil default))))
+     (completing-read "Switch to workspace: " collection nil t nil nil default))))
 (map! :nvig (kbd "C-<return>") #'cmg/workspace-switch-to)
 
 ;; Visual line movement and remappings
@@ -1692,6 +1734,28 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
                   (cmg/sidebar-buffer-p
                    (if (stringp item) (get-buffer item) item)))
                 (apply fn args)))
+
+;; Disable live preview in buffer switchers (SPC b b, etc.) — Doom leaves the
+;; buffer commands on consult's default `any' preview, which swaps the current
+;; window's buffer as you move over candidates. nil = no preview at all.
+(after! consult
+  (consult-customize
+   +vertico/switch-workspace-buffer consult-buffer consult-project-buffer
+   :preview-key nil))
+
+;; Make unsaved buffers obvious in the buffer switcher. Marginalia already
+;; annotates each buffer with modeline-style flags (`**' = modified), but they
+;; render dim and are easy to miss — recolor the `*' flags yellow + bold so
+;; unsaved buffers stand out. Same characters, so no column shift. Covers
+;; SPC b b, consult-buffer, and consult-project-buffer (all `buffer' category).
+(defadvice! +marginalia-highlight-unsaved-a (annotation)
+  :filter-return #'marginalia-annotate-buffer
+  (if (stringp annotation)
+      (replace-regexp-in-string
+       "\\*"
+       (lambda (m) (propertize m 'face `(:foreground ,(doom-color 'yellow) :weight bold)))
+       annotation t t)
+    annotation))
 
 ;; Minor mode with shared keybindings for all sidebar buffers
 (define-minor-mode cmg/sidebar-mode
@@ -2570,22 +2634,33 @@ lines that were split by terminal overflow (1-space indent after dedent)."
   (let* ((current (+workspace-current-name))
          (names (when (bound-and-true-p persp-mode)
                   (+workspace-list-names)))
-         (default-color (doom-color 'base7))
-         (waiting-color (doom-color 'yellow))
-         (pipe (propertize "|" 'face `(:foreground ,default-color))))
+         (default-color (doom-color 'base6))
+         (alert-color (doom-color 'red))
+         (current-bg (doom-color 'base4))
+         (inactive-bg (doom-color 'base3))
+         (active-fg (doom-color 'base8)))
     (if (null names) ""
-      (concat
-       pipe
-       (mapconcat
-        (lambda (name)
-          (let ((name-color (if (cmg/claude-waiting-p name) waiting-color default-color)))
-            (if (string= name current)
-                (concat (propertize "•" 'face `(:foreground ,default-color))
-                        (propertize name 'face `(:foreground ,name-color :weight bold))
-                        (propertize "•" 'face `(:foreground ,default-color)))
-              (concat " " (propertize name 'face `(:foreground ,name-color)) " "))))
-        names pipe)
-       pipe))))
+      (mapconcat
+       (lambda (name)
+         ;; Chip padding: 3 leading positions (space, dot, space) and 1 trailing
+         ;; space, with an uncolored space separating chips (see mapconcat). A
+         ;; dot always precedes the name and turns red when Claude is waiting
+         ;; (otherwise it matches the text color), so nothing shifts.
+         ;; Chip background marks current (base4 block) vs inactive (base3). The
+         ;; current workspace's text is base8 (the focused divider color); inactive use base6.
+         (let* ((waiting (cmg/claude-waiting-p name))
+                (curr (string= name current))
+                (chip-bg (if curr current-bg inactive-bg))
+                (text-color (if curr active-fg default-color))
+                (base-face `(:background ,chip-bg ,@(when curr '(:weight bold))))
+                (dot (propertize "●" 'face (append `(:foreground ,(if waiting alert-color text-color))
+                                                   base-face))))
+           (concat
+            (propertize " " 'face base-face)
+            dot
+            (propertize (concat " " name " ")
+                        'face (append `(:foreground ,text-color) base-face)))))
+       names " "))))
 
 (defun cmg/tab-bar-save-icon ()
   "Return save icon: clean or modified, colored by unsaved buffer state."
@@ -2609,7 +2684,7 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 (defun cmg/tab-bar-stats ()
   "Return tab bar display with workspaces, calendar, branch, and stats."
   (let* ((stats-width (string-width cmg/tab-bar-stats-cache))
-         (branch-width (+ (string-width cmg/tab-bar-branch-cache) 5)))
+         (branch-width (+ (string-width cmg/tab-bar-branch-cache) 6)))
     `((pad menu-item ,(propertize " " 'face `(:box (:line-width (2 . 2) :color ,(doom-color 'bg-alt)))) ignore)
       (workspaces menu-item ,(cmg/tab-bar-workspaces) ignore)
       (cal-spacer menu-item "   " ignore)
