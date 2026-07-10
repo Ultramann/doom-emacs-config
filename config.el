@@ -2661,20 +2661,19 @@ bar is derived purely from this value — the color is not the source of truth."
          (string-prefix-p "✳" last-title))))
 
 (defun cmg/claude-refresh-dot-state (workspace-name)
-  "Advance the Claude dot state machine for WORKSPACE-NAME.
-The next state is a function of the current state and whether Claude is waiting,
-plus whether its buffer is focused (which acknowledges an alert):
-  not waiting                        -> cleared (normal dot)
-  waiting + focused or already :seen  -> :seen   (yellow, acknowledged)
-  waiting otherwise                   -> :unseen (red, needs attention)"
-  (let* ((buf (format "%s:Claude" workspace-name))
-         (focused (string= buf (buffer-name (window-buffer (selected-window)))))
-         (state (gethash workspace-name cmg/claude-dot-state)))
+  "Advance the Claude dot state machine for WORKSPACE-NAME on a title change.
+  not waiting  -> cleared (normal dot)
+  already :seen -> stays :seen (keep the acknowledgment)
+  otherwise     -> :unseen (red until you take an action in the buffer)
+Acknowledgment (:unseen -> :seen) is handled separately by
+`cmg/claude-ack-on-action' on `post-command-hook', so merely having the cursor
+in the buffer when Claude starts waiting does not clear the alert — you must
+actually do something in the buffer."
+  (let ((state (gethash workspace-name cmg/claude-dot-state)))
     (cond
      ((not (cmg/claude-waiting-p workspace-name))
       (remhash workspace-name cmg/claude-dot-state))
-     ((or focused (eq state :seen))
-      (puthash workspace-name :seen cmg/claude-dot-state))
+     ((eq state :seen) nil)
      (t
       (puthash workspace-name :unseen cmg/claude-dot-state)))))
 
@@ -2694,14 +2693,19 @@ plus whether its buffer is focused (which acknowledges an alert):
       (cmg/claude-refresh-dot-state
        (substring buf 0 (- (length buf) (length ":Claude")))))))
 
-(defun cmg/claude-mark-seen-on-focus (&rest _)
-  "Advance the Claude dot state when a Claude buffer gains focus."
-  (let ((buf (buffer-name (window-buffer (selected-window)))))
-    (when (string-match-p ":Claude$" buf)
-      (cmg/claude-refresh-dot-state
-       (substring buf 0 (- (length buf) (length ":Claude"))))
-      (force-mode-line-update t))))
-(add-hook 'window-selection-change-functions #'cmg/claude-mark-seen-on-focus)
+(defun cmg/claude-ack-on-action ()
+  "Acknowledge a waiting Claude buffer (:unseen -> :seen) when you act in it.
+On `post-command-hook': it takes an actual command inside the buffer to move
+red -> yellow, so merely having the cursor there when Claude starts waiting
+leaves it red until you interact. Entering the buffer via a command (window
+nav, click) counts as an action, which acknowledges it too."
+  (let ((buf (buffer-name)))
+    (when (string-suffix-p ":Claude" buf)
+      (let ((ws (substring buf 0 (- (length buf) (length ":Claude")))))
+        (when (eq (gethash ws cmg/claude-dot-state) :unseen)
+          (puthash ws :seen cmg/claude-dot-state)
+          (force-mode-line-update t))))))
+(add-hook 'post-command-hook #'cmg/claude-ack-on-action)
 
 (defun cmg/tab-bar-workspaces ()
   "Return propertized workspace list for the tab bar."
