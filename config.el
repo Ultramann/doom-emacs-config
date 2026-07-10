@@ -845,8 +845,9 @@ Skips if the current workspace already has sidebar buffers."
        "x" nil "`" nil
        "0" nil "1" nil "2" nil "3" nil "4" nil
        "5" nil "6" nil "7" nil "8" nil "9" nil
-       :desc "Last workspace" "l" #'+workspace/other
-       :desc "Load workspace" "L" #'+workspace/load)
+       :desc "Move workspace left"  "h" #'cmg/workspace-move-left
+       :desc "Move workspace right" "l" #'cmg/workspace-move-right
+       :desc "Last workspace"       "L" #'+workspace/other)
 
       ;; Window overrides — remove clutter
       (:prefix "w"
@@ -1152,12 +1153,12 @@ Each candidate is annotated with the git branch of its project."
          (maxlen (apply #'max 0 (mapcar #'string-width names)))
          (annotate (lambda (n)
                      (let ((branch (cdr (assoc n branches)))
-                           (waiting (cmg/claude-waiting-p n))
+                           (dot-color (cmg/claude-dot-color n))
                            (pad (make-string (- maxlen (string-width n)) ?\s)))
                        (concat
                         pad "  "
-                        (if waiting
-                            (propertize "●" 'face `(:foreground ,(doom-color 'red)))
+                        (if dot-color
+                            (propertize "●" 'face `(:foreground ,dot-color))
                           " ")
                         (if branch
                             (propertize (format " %s" branch)
@@ -1169,6 +1170,36 @@ Each candidate is annotated with the git branch of its project."
                          (complete-with-action action names str pred)))))
     (+workspace/switch-to
      (completing-read "Switch to workspace: " collection nil t nil nil default))))
+
+(defun cmg/workspace-move (direction)
+  "Move the current workspace DIRECTION (-1 left, +1 right) in the order.
+Reorders `persp-names-cache', the source of order for the tab bar and switcher."
+  (let* ((name (+workspace-current-name))
+         (names (+workspace-list-names))
+         (pos (cl-position name names :test #'string=))
+         (new-pos (and pos (+ pos direction))))
+    (if (and new-pos (>= new-pos 0) (< new-pos (length names)))
+        (let ((other (nth new-pos names)))
+          ;; Swap NAME and OTHER wherever they sit in the cache (leaves the
+          ;; hidden nil persp untouched), so the displayed order shifts by one.
+          (setq persp-names-cache
+                (mapcar (lambda (n)
+                          (cond ((string= n name) other)
+                                ((string= n other) name)
+                                (t n)))
+                        persp-names-cache))
+          (force-mode-line-update t))
+      (message "Can't move workspace further %s" (if (< direction 0) "left" "right")))))
+
+(defun cmg/workspace-move-left ()
+  "Move the current workspace one position left in the order."
+  (interactive)
+  (cmg/workspace-move -1))
+
+(defun cmg/workspace-move-right ()
+  "Move the current workspace one position right in the order."
+  (interactive)
+  (cmg/workspace-move 1))
 (map! :nvig (kbd "C-<return>") #'cmg/workspace-switch-to)
 
 ;; Visual line movement and remappings
@@ -2615,11 +2646,11 @@ lines that were split by terminal overflow (1-space indent after dedent)."
 (defvar cmg/claude-last-title (make-hash-table :test 'equal)
   "Hash table of Claude buffer name → last terminal title.")
 
-(defadvice! cmg/claude-track-title-a (title)
-  "Track the last title for Claude buffers."
-  :before #'vterm--set-title
-  (when (string-match-p ":Claude$" (buffer-name))
-    (puthash (buffer-name) title cmg/claude-last-title)))
+(defvar cmg/claude-dot-state (make-hash-table :test 'equal)
+  "Workspace name → notification state for its Claude dot.
+`:unseen' = waiting but not yet looked at (red); `:seen' = waiting and already
+looked at (yellow); absent = not waiting (normal dot). The dot color in the top
+bar is derived purely from this value — the color is not the source of truth.")
 
 (defun cmg/claude-waiting-p (workspace-name)
   "Return non-nil if the Claude buffer in WORKSPACE-NAME is waiting for input."
@@ -2629,13 +2660,55 @@ lines that were split by terminal overflow (1-space indent after dedent)."
          last-title
          (string-prefix-p "✳" last-title))))
 
+(defun cmg/claude-refresh-dot-state (workspace-name)
+  "Advance the Claude dot state machine for WORKSPACE-NAME.
+The next state is a function of the current state and whether Claude is waiting,
+plus whether its buffer is focused (which acknowledges an alert):
+  not waiting                        -> cleared (normal dot)
+  waiting + focused or already :seen  -> :seen   (yellow, acknowledged)
+  waiting otherwise                   -> :unseen (red, needs attention)"
+  (let* ((buf (format "%s:Claude" workspace-name))
+         (focused (string= buf (buffer-name (window-buffer (selected-window)))))
+         (state (gethash workspace-name cmg/claude-dot-state)))
+    (cond
+     ((not (cmg/claude-waiting-p workspace-name))
+      (remhash workspace-name cmg/claude-dot-state))
+     ((or focused (eq state :seen))
+      (puthash workspace-name :seen cmg/claude-dot-state))
+     (t
+      (puthash workspace-name :unseen cmg/claude-dot-state)))))
+
+(defun cmg/claude-dot-color (workspace-name)
+  "Return the Claude notification dot color for WORKSPACE-NAME, or nil for none.
+:unseen -> red (needs attention), :seen -> yellow (acknowledged)."
+  (pcase (gethash workspace-name cmg/claude-dot-state)
+    (:unseen (doom-color 'red))
+    (:seen (doom-color 'yellow))))
+
+(defadvice! cmg/claude-track-title-a (title)
+  "Track the last title for Claude buffers, then advance the dot state machine."
+  :before #'vterm--set-title
+  (let ((buf (buffer-name)))
+    (when (string-match-p ":Claude$" buf)
+      (puthash buf title cmg/claude-last-title)
+      (cmg/claude-refresh-dot-state
+       (substring buf 0 (- (length buf) (length ":Claude")))))))
+
+(defun cmg/claude-mark-seen-on-focus (&rest _)
+  "Advance the Claude dot state when a Claude buffer gains focus."
+  (let ((buf (buffer-name (window-buffer (selected-window)))))
+    (when (string-match-p ":Claude$" buf)
+      (cmg/claude-refresh-dot-state
+       (substring buf 0 (- (length buf) (length ":Claude"))))
+      (force-mode-line-update t))))
+(add-hook 'window-selection-change-functions #'cmg/claude-mark-seen-on-focus)
+
 (defun cmg/tab-bar-workspaces ()
   "Return propertized workspace list for the tab bar."
   (let* ((current (+workspace-current-name))
          (names (when (bound-and-true-p persp-mode)
                   (+workspace-list-names)))
          (default-color (doom-color 'base6))
-         (alert-color (doom-color 'red))
          (current-bg (doom-color 'base4))
          (inactive-bg (doom-color 'base3))
          (active-fg (doom-color 'base8)))
@@ -2648,13 +2721,14 @@ lines that were split by terminal overflow (1-space indent after dedent)."
          ;; (otherwise it matches the text color), so nothing shifts.
          ;; Chip background marks current (base4 block) vs inactive (base3). The
          ;; current workspace's text is base8 (the focused divider color); inactive use base6.
-         (let* ((waiting (cmg/claude-waiting-p name))
-                (curr (string= name current))
+         (let* ((curr (string= name current))
                 (chip-bg (if curr current-bg inactive-bg))
                 (text-color (if curr active-fg default-color))
                 (base-face `(:background ,chip-bg ,@(when curr '(:weight bold))))
-                (dot (propertize "●" 'face (append `(:foreground ,(if waiting alert-color text-color))
-                                                   base-face))))
+                ;; Dot color derived from the shared Claude state machine; falls
+                ;; back to the normal text color when there's no alert.
+                (dot-color (or (cmg/claude-dot-color name) text-color))
+                (dot (propertize "●" 'face (append `(:foreground ,dot-color) base-face))))
            (concat
             (propertize " " 'face base-face)
             dot
