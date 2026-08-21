@@ -1326,13 +1326,15 @@ Reorders `persp-names-cache', the source of order for the tab bar and switcher."
         eglot-extend-to-xref t)
   (add-to-list 'eglot-server-programs
                '(python-mode . ("pyright-langserver" "--stdio")))
-  ;; Tell pyright which Python to use via pyenv (only when no .python-version exists)
+  ;; Tell pyright which Python interpreter to use, resolved via pyenv so it honors
+  ;; the scope's `.python-version'.  Pyright cannot detect pyenv virtualenvs itself,
+  ;; so third-party imports (e.g. sqlalchemy) would otherwise resolve to `Unknown'.
+  ;; eglot binds `default-directory' to the request scope before calling this, so
+  ;; `pyenv which python' selects the correct per-service environment.
   (defun cmg/eglot-python-config (_server)
-    (if (locate-dominating-file default-directory ".python-version")
-        (list)
-      (let ((python-path (string-trim (shell-command-to-string "pyenv which python 2>/dev/null"))))
-        (if (string-empty-p python-path) (list)
-          (list :python (list :pythonPath python-path))))))
+    (let ((python-path (string-trim (shell-command-to-string "pyenv which python 2>/dev/null"))))
+      (if (string-empty-p python-path) (list)
+        (list :python (list :pythonPath python-path)))))
   (setq-default eglot-workspace-configuration #'cmg/eglot-python-config)
   ;; Filter out hint-level diagnostics (severity 4) — pyright sends these
   ;; for unused variables etc. but the CLI doesn't report them
