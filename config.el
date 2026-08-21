@@ -143,6 +143,38 @@ falling back to doom-project-root and default-directory."
         (string-match-p "^[^:]+:Claude$" name)
         (string-match-p "^\\*deadgrep " name))))
 
+(defun cmg/foreign-sidebar-buffer-p (buf)
+  "Return non-nil if BUF is a Term/Claude sidebar buffer owned by another workspace.
+Used as a filter in `persp-add-buffer-on-after-change-major-mode-filter-functions'
+so Doom's `+workspaces-add-current-buffer-h' never adopts a foreign-workspace
+sidebar buffer into the current perspective.  Deadgrep buffers (no `{ws}:' prefix)
+are intentionally excluded — they are matched to a workspace by project root."
+  (let ((name (buffer-name buf)))
+    (and (string-match-p "^[^:]+:\\(Term:\\|Claude$\\)" name)
+         (not (string-prefix-p (concat (cmg/workspace-name) ":") name)))))
+
+(with-eval-after-load 'persp-mode
+  (add-to-list 'persp-add-buffer-on-after-change-major-mode-filter-functions
+               #'cmg/foreign-sidebar-buffer-p))
+
+(defun cmg/kill-sidebar-buffer (buf)
+  "Kill BUF unconditionally, defeating persp-mode's multi-perspective kill guard.
+Un-dedicates every window showing BUF, kills its process, removes BUF from ALL
+perspectives (suppressing persp's window-swap so dedicated sidebar windows do not
+error), then kills it.  Safe whether BUF is in zero, one, or many perspectives.
+Uses `persp--remove-buffer-2' exactly as persp-mode itself does (persp-mode.el
+calls it with a nil first arg to remove from all perspectives)."
+  (when (buffer-live-p buf)
+    (dolist (win (get-buffer-window-list buf nil t))
+      (set-window-dedicated-p win nil))
+    (when-let ((proc (get-buffer-process buf)))
+      (set-process-query-on-exit-flag proc nil)
+      (delete-process proc))
+    (when (bound-and-true-p persp-mode)
+      (let (persp-when-remove-buffer-switch-to-other-buffer)
+        (persp--remove-buffer-2 nil buf)))
+    (kill-buffer buf)))
+
 (defun cmg/workspace-sidebar-buffers ()
   "Return sidebar buffers belonging to the current workspace."
   (let ((prefix (concat (cmg/workspace-name) ":")))
@@ -443,6 +475,27 @@ Skips if the current workspace already has sidebar buffers."
              (list win)))))))
   (add-hook 'persp-activated-functions #'cmg/persp-activated-h)
 
+  ;; Self-heal cross-workspace sidebar leaks: a `{ws}:Term:'/`{ws}:Claude' buffer
+  ;; is workspace-private, so strip it from any perspective it does not own.  This
+  ;; cleans leaks already saved in a persp session (restored on startup) as well as
+  ;; any that slip past the `cmg/foreign-sidebar-buffer-p' filter.  Runs on switch.
+  (defun cmg/enforce-sidebar-persp-isolation (&rest _)
+    (when (bound-and-true-p persp-mode)
+      (dolist (buf (buffer-list))
+        (let ((name (buffer-name buf)))
+          (when (string-match "^\\([^:]+\\):\\(Term:\\|Claude$\\)" name)
+            (let ((owner (match-string 1 name)))
+              (maphash
+               (lambda (pname persp)
+                 (when (and persp
+                            (not (equal pname owner))
+                            (memq buf (persp-buffers persp)))
+                   (let (persp-autokill-buffer-on-remove
+                         persp-when-remove-buffer-switch-to-other-buffer)
+                     (persp--remove-buffer-2 persp buf))))
+               *persp-hash*)))))))
+  (add-hook 'persp-activated-functions #'cmg/enforce-sidebar-persp-isolation)
+
   ;; Filter vterm buffers from persp save (they can't be serialized)
   (setq persp-filter-save-buffers-functions
         (list (lambda (buf) (with-current-buffer buf
@@ -528,22 +581,17 @@ Skips if the current workspace already has sidebar buffers."
                               (set-window-dedicated-p win nil)
                               (setq cmg/sidebar-saved-top-height nil)
                               (delete-window win)
-                              (kill-buffer buf)
+                              (cmg/kill-sidebar-buffer buf)
                               (when (and top (window-live-p top))
                                 (select-window top))))
                            ;; Sidebar buffer: kill and switch to next sidebar tab
                            ((cmg/sidebar-buffer-p (current-buffer))
                             (let ((buf (current-buffer))
                                   (others (remove (current-buffer) (cmg/workspace-sidebar-buffers))))
-                              (set-window-dedicated-p (selected-window) nil)
-                              (when-let ((proc (get-buffer-process buf)))
-                                (set-process-query-on-exit-flag proc nil)
-                                (delete-process proc))
-                              (if others
-                                  (progn
-                                    (switch-to-buffer (car others))
-                                    (kill-buffer buf))
-                                (kill-buffer buf))))
+                              (when others
+                                (set-window-dedicated-p (selected-window) nil)
+                                (switch-to-buffer (car others)))
+                              (cmg/kill-sidebar-buffer buf)))
                            ;; Everything else
                            (t
                             (kill-current-buffer)
