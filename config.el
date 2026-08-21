@@ -363,7 +363,7 @@ PROJECT-DIR overrides the terminal's working directory."
          :key "SPC p f")
         ("Magit status"
          :icon (nerd-icons-octicon "nf-oct-git_branch" :face '+dashboard-menu-title)
-         :action magit-status
+         :action cmg/magit-status
          :key "SPC g g")
         ("Open Claude"
          :icon (nerd-icons-mdicon "nf-md-brain" :face '+dashboard-menu-title)
@@ -822,6 +822,19 @@ Skips if the current workspace already has sidebar buffers."
     (kbd "RET") #'cmg/magit-visit-file-other-window-dwim)
   (evil-define-key* 'normal magit-status-mode-map
     (kbd "RET") #'cmg/magit-visit-file-other-window-dwim)
+  ;; Workspace-aware magit: open the current workspace's project, not the repo of
+  ;; whatever buffer happens to be focused (a foreign-workspace buffer would send
+  ;; vanilla magit-status to the wrong repo).
+  (defun cmg/magit-status (&optional arg)
+    "Open `magit-status' for the current workspace's project root.
+Ignores the selected buffer's repo so magit follows the workspace
+(`cmg/project-root'), not whatever file happens to be focused.  With a prefix
+ARG, fall back to vanilla `magit-status' (the current buffer's own repo)."
+    (interactive "P")
+    (if arg
+        (call-interactively #'magit-status)
+      (let ((default-directory (cmg/project-root)))
+        (magit-status))))
   ;; Swap f (Fetch->Pull) and F (Pull->Fetch) in magit-dispatch and magit-mode-map
   (define-key magit-mode-map "f" #'magit-pull)
   (define-key magit-mode-map "F" #'magit-fetch)
@@ -932,6 +945,7 @@ Skips if the current workspace already has sidebar buffers."
       :desc "Toggle Treemacs"          "t t" #'treemacs
 
       ;; Git
+      :desc "Magit status (workspace)" "g g" #'cmg/magit-status
       :desc "Show hunk diff"           "g d" #'diff-hl-show-hunk
       :desc "Blame line"               "g b" #'cmg/git-blame-line
       :desc "Blame buffer"             "g B" #'magit-blame-addition
