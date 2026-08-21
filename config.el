@@ -76,11 +76,20 @@ Checks window param first, falls back to buffer name, self-heals params."
                                (not (buffer-local-value 'cmg/bottom-terminal (window-buffer w)))))
               (window-list)))
 
+(defun cmg/sidebar-bottom-window-p (win)
+  "Return non-nil if WIN is the bottom sidebar pane.
+Checks the window param first, falls back to the durable buffer-local
+`cmg/bottom-terminal', and self-heals the param.  The `side-drawer-bottom'
+window parameter is lost on workspace/perspective restore, but the
+buffer-local variable survives — so trust it and repair the param."
+  (or (window-parameter win 'side-drawer-bottom)
+      (when (buffer-local-value 'cmg/bottom-terminal (window-buffer win))
+        (set-window-parameter win 'side-drawer-bottom t)
+        t)))
+
 (defun cmg/sidebar-bottom-window ()
   "Return the bottom sidebar window, or nil."
-  (cl-find-if (lambda (w) (or (window-parameter w 'side-drawer-bottom)
-                              (buffer-local-value 'cmg/bottom-terminal (window-buffer w))))
-              (window-list)))
+  (cl-find-if #'cmg/sidebar-bottom-window-p (window-list)))
 
 (defun cmg/main-windows ()
   "Return list of non-sidebar, non-treemacs, non-minibuffer windows."
@@ -1799,7 +1808,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
 (defun cmg/split-sidebar-bottom ()
   "Split the sidebar vertically and open a terminal in the bottom half."
   (interactive)
-  (when (window-parameter (selected-window) 'side-drawer-bottom)
+  (when (cmg/sidebar-bottom-window-p (selected-window))
     (user-error "Already in the bottom pane"))
   (let* ((sidebar-height (window-height (selected-window)))
          (bottom-win (split-window (selected-window) (- sidebar-height (/ sidebar-height 4)) 'below))
@@ -1829,7 +1838,7 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
   (interactive)
   (when cmg/sidebar-saved-top-height
     (cmg/sidebar-toggle-maximize))
-  (let ((target (if (window-parameter (selected-window) 'side-drawer-bottom)
+  (let ((target (if (cmg/sidebar-bottom-window-p (selected-window))
                     (cmg/sidebar-top-window)
                   (cmg/sidebar-bottom-window))))
     (when target (select-window target))))
