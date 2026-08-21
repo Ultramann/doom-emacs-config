@@ -1209,9 +1209,13 @@ If only one main window exists, create a split in that direction first."
                               (shell-quote-argument root))))))
         (unless (string-empty-p branch) branch)))))
 
+(defvar cmg/workspace-switch-history nil
+  "Minibuffer history for `cmg/workspace-switch-to' (drives recency sorting).")
+
 (defun cmg/workspace-switch-to ()
   "Switch workspace with the last workspace preselected.
-Each candidate is annotated with the git branch of its project."
+Candidates are annotated with git branch and Claude-waiting dot, and ordered
+with Claude-needs-input workspaces first, then by recency."
   (interactive)
   (let* ((current (+workspace-current-name))
          (names (cl-remove current (+workspace-list-names) :test #'string=))
@@ -1237,10 +1241,23 @@ Each candidate is annotated with the git branch of its project."
                           "")))))
          (collection (lambda (str pred action)
                        (if (eq action 'metadata)
-                           `(metadata (annotation-function . ,annotate))
+                           `(metadata
+                             (annotation-function . ,annotate)
+                             ;; Claude-needs-input workspaces first (stable),
+                             ;; then whatever vertico's recency sort produces.
+                             (display-sort-function
+                              . ,(lambda (cands)
+                                   (let ((by-recency
+                                          (if (bound-and-true-p vertico-sort-function)
+                                              (funcall vertico-sort-function cands)
+                                            cands)))
+                                     (append
+                                      (seq-filter #'cmg/claude-dot-color by-recency)
+                                      (seq-remove #'cmg/claude-dot-color by-recency))))))
                          (complete-with-action action names str pred)))))
     (+workspace/switch-to
-     (completing-read "Switch to workspace: " collection nil t nil nil default))))
+     (completing-read "Switch to workspace: " collection nil t nil
+                      'cmg/workspace-switch-history default))))
 
 (defun cmg/workspace-move (direction)
   "Move the current workspace DIRECTION (-1 left, +1 right) in the order.
