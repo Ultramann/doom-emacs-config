@@ -61,13 +61,30 @@
   (set-window-parameter win 'no-delete-other-windows t)
   (set-window-parameter win 'no-other-window t))
 
+(defun cmg/clear-sidebar-window-params (win)
+  "Strip sidebar protection params from WIN and undedicate it.
+Demotes a window that once held a sidebar buffer but now shows a main
+buffer, so a dashboard or file buffer trapped in a former sidebar window
+is treated as a main window again — never starved to the sidebar width by
+`cmg/enforce-sidebar-width', and never left dedicated to block `display-buffer'."
+  (set-window-parameter win 'side-drawer nil)
+  (set-window-parameter win 'no-delete-other-windows nil)
+  (set-window-parameter win 'no-other-window nil)
+  (set-window-dedicated-p win nil))
+
 (defun cmg/sidebar-window-p (win)
   "Return non-nil if WIN is a sidebar window (top or bottom).
-Checks window param first, falls back to buffer name, self-heals params."
-  (or (window-parameter win 'side-drawer)
-      (when (cmg/sidebar-buffer-p (window-buffer win))
-        (cmg/set-sidebar-window-params win)
-        t)))
+Buffer name is authoritative in BOTH directions.  A window showing a
+sidebar buffer IS a sidebar — heal any params lost on workspace restore.
+A window showing a non-sidebar buffer is NOT — clear a stale `side-drawer'
+param left over from a previous sidebar buffer, so it self-heals to main."
+  (cond
+   ((cmg/sidebar-buffer-p (window-buffer win))
+    (cmg/set-sidebar-window-params win)
+    t)
+   ((window-parameter win 'side-drawer)
+    (cmg/clear-sidebar-window-params win)
+    nil)))
 
 (defun cmg/sidebar-top-window ()
   "Return the top sidebar window, or nil."
@@ -604,7 +621,8 @@ Skips if the current workspace already has sidebar buffers."
                                                      (and (not (eq w (selected-window)))
                                                           (eq (window-buffer w) (current-buffer))))
                                                    (cmg/main-windows))))
-                              (delete-window))
+                              (delete-window)
+                              (cmg/enforce-sidebar-width))
                              ;; Last main window showing non-real buffer: show dashboard
                              ((or (cmg/sidebar-buffer-p (current-buffer))
                                   (not (doom-real-buffer-p (current-buffer))))
@@ -755,7 +773,8 @@ Skips if the current workspace already has sidebar buffers."
                                      (and (not (eq w (selected-window)))
                                           (eq (window-buffer w) (current-buffer))))
                                    (cmg/main-windows))))
-              (delete-window))
+              (delete-window)
+              (cmg/enforce-sidebar-width))
              ((not (doom-real-buffer-p (current-buffer)))
               (switch-to-buffer (doom-fallback-buffer))
               (cmg/enforce-sidebar-width))))))
