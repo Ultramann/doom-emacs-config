@@ -828,6 +828,11 @@ Skips if the current workspace already has sidebar buffers."
   (define-key magit-diff-section-map (kbd "C-<return>") #'cmg/workspace-switch-to)
   (after! magit-submodule
     (define-key magit-module-section-map (kbd "C-<return>") #'cmg/workspace-switch-to))
+  ;; C-j is bound to `magit-diff-visit-worktree-file' in the higher-precedence
+  ;; magit-diff-section-map (a `keymap' text property on diff sections), which
+  ;; shadows our window-nav C-j on a diff and errors "Cannot determine file to
+  ;; visit" when there's no file at point. Override it there too.
+  (define-key magit-diff-section-map (kbd "C-j") #'evil-window-down)
   ;; RET: visit the file in the other window when point is on a diff/file section;
   ;; otherwise run the section's default action (fixes "Cannot determine file to
   ;; visit" when RET is pressed on headers, commits, untracked sections, etc.).
