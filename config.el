@@ -1502,7 +1502,21 @@ reapplies cached faces. Output depends only on (LANG, text), so this is exact."
           (set-buffer-modified-p modified)))))
 
   (advice-add 'markdown-fontify-code-block-natively
-              :override #'+markdown-fontify-code-block-natively))
+              :override #'+markdown-fontify-code-block-natively)
+
+  ;; `markdown-get-lang-mode' is called for every fenced block on every
+  ;; fontification and calls `treesit-language-available-p' (which tries to load
+  ;; the grammar) twice per block — the dominant cost (~90%) when editing near
+  ;; code blocks. The language->mode mapping is stable for a session, so memoize.
+  (defvar +markdown-lang-mode-cache (make-hash-table :test 'equal)
+    "Memoizes `markdown-get-lang-mode' results, keyed on the language string.")
+  (defun +markdown-get-lang-mode-memoize-a (fn lang)
+    "Memoizing :around advice for `markdown-get-lang-mode'."
+    (let ((cached (gethash lang +markdown-lang-mode-cache 'miss)))
+      (if (eq cached 'miss)
+          (puthash lang (funcall fn lang) +markdown-lang-mode-cache)
+        cached)))
+  (advice-add 'markdown-get-lang-mode :around #'+markdown-get-lang-mode-memoize-a))
 
 ;; ——————————————————————————————————————————————————————————————————
 ;; SQL
